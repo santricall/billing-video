@@ -26,6 +26,12 @@ button.sec{background:transparent;color:var(--p);border:1px solid var(--p)}
 button.bad{background:var(--bad)}
 button.sm{padding:6px 10px;font-size:13px}
 button:disabled{opacity:.5}
+button{transition:background .12s,color .12s,transform .08s}
+button:active,button.pressed{filter:brightness(.72);transform:scale(.96)}
+button.sec:active,button.sec.pressed{background:var(--p);color:#fff;filter:none}
+.tabs button:active,.tabs button.pressed{background:var(--p);color:#fff;filter:none}
+button.busy{background:#d97706!important;color:#fff!important;border-color:#d97706!important;pointer-events:none;filter:none}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50;overflow:auto}
 :focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .row>*{flex:1}
@@ -74,7 +80,19 @@ const FONTS = {Poppins:"'Poppins',sans-serif",Nunito:"'Nunito',sans-serif",Siste
 let S = {}, CFG = {slotCount:20,warnSec:60}, T = {}, tab = '';
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let LB = null, LBT = 0;
+document.addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('button');
+  if (!b || b.disabled) return;
+  b.classList.add('pressed'); setTimeout(() => b.classList.remove('pressed'), 700);
+  LB = b; LBT = Date.now();
+}, true);
 async function api(action, data = {}) {
+  const b = (LB && Date.now() - LBT < 1500 && !['beat', 'devices', 'config'].includes(action)) ? LB : null;
+  if (b) b.classList.add('busy');
+  try { return await apiRaw(action, data); } finally { if (b) b.classList.remove('busy'); }
+}
+async function apiRaw(action, data = {}) {
   if (typeof API === 'undefined' || !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(API))
     throw new Error('Alamat Apps Script belum diisi benar di file config.js (harus diawali https://script.google.com/macros/s/ dan berakhiran /exec).');
   let t;
@@ -411,12 +429,36 @@ async function cari() { listUsers('santri', $('#q').value, 'ql'); }
 async function listUsers(role, q, target) {
   try {
     const j = await api('listUsers', {role, q});
+    UL = j.users;
     $('#'+target).innerHTML = '<table><tr><th>Username</th><th>Nama</th><th>Login terakhir</th><th></th></tr>' + j.users.map(u =>
       `<tr><td>${esc(u.username)}</td><td>${esc(u.nama)}</td><td>${esc(u.login||'-')}</td><td style="white-space:nowrap">
       <button class="sec sm" onclick="tog('${esc(u.username)}',${!u.aktif},'${role}')">${u.aktif?'Nonaktifkan':'Aktifkan'}</button>
+      <button class="sec sm" onclick="editU('${esc(u.username)}','${role}')">Edit</button>
       <button class="sec sm" onclick="gp('${esc(u.username)}')">Sandi</button>
       <button class="bad sm" onclick="del('${esc(u.username)}','${role}')">Hapus</button></td></tr>`).join('') + '</table>' + (j.users.length?'':'<p class="mut">Tidak ada data.</p>');
   } catch (e) { $('#'+target).innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+let UL = [];
+function editU(u, role) {
+  const x = UL.find(v => v.username === u); if (!x) return;
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'md';
+  m.innerHTML = `<div class="card" style="max-width:420px;width:100%;margin:0"><h2>Edit ${role === 'pengawas' ? 'pengawas' : 'santri'}</h2>
+  <label>Username</label><input id="eu" value="${esc(x.username)}" autocapitalize="off">
+  <label>Nama lengkap</label><input id="en" value="${esc(x.nama)}">
+  ${role === 'pengawas' ? '' : `<label>No WA orang tua</label><input id="eo" inputmode="tel" value="${esc(x.ortu)}">`}
+  <label>Kata sandi baru (kosongkan jika tidak diubah)</label><input id="ep" type="password" autocomplete="new-password">
+  <div id="em" class="err"></div>
+  <div class="row"><button onclick="saveU('${esc(x.username)}','${role}')">Simpan perubahan</button><button class="sec" onclick="$('#md').remove()">Batal</button></div></div>`;
+  document.body.appendChild(m);
+}
+async function saveU(old, role) {
+  const nu = $('#eu').value.trim();
+  try {
+    await api('editUser', {username:old, newUsername:nu, nama:$('#en').value.trim(), ortu:$('#eo') ? $('#eo').value : undefined});
+    const p = $('#ep').value;
+    if (p) await api('setPass', {username:nu, password:p});
+    $('#md').remove(); refresh(role);
+  } catch (e) { toast('em', e.message, 1); }
 }
 const refresh = role => role === 'pengawas' ? listUsers('pengawas','', 'sl') : cari();
 async function tog(u, a, role) { try { await api('toggleUser', {username:u, aktif:a}); refresh(role); } catch (e) { alert(e.message); } }
