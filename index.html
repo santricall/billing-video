@@ -472,7 +472,12 @@ function vStaff() {
   listUsers('pengawas', '', 'sl');
 }
 async function vLog() {
-  $('#tc').innerHTML = `<div class="card"><h2>Log aktivitas terbaru</h2><p class="mut">Dicadangkan ke Google Drive otomatis tiap hari lalu dikosongkan.</p><div class="wrap" id="lg">Memuat...</div></div>`;
+  $('#tc').innerHTML = `<div class="card"><h2>Log aktivitas terbaru</h2><p class="mut">Dicadangkan ke Google Drive otomatis tiap hari lalu dikosongkan.</p><div class="wrap" id="lg">Memuat...</div></div>
+  <div class="card"><h2>Arsip backup (7 terakhir)</h2>
+  <p class="mut">Setiap backup berisi log yang sudah dikosongkan dari tabel di atas. Unduh sebagai PDF kapan saja.</p>
+  <div id="bk7">Memuat...</div>
+  <div class="row" style="margin-top:10px"><button class="sec" onclick="backupHere()">Backup log sekarang</button></div><div id="bkm" class="mut" style="margin-top:6px"></div></div>`;
+  loadBackups();
   try {
     const j = await api('logs');
     $('#lg').innerHTML = '<table><tr><th>Waktu</th><th>Santri</th><th>Kontak</th><th>Durasi</th><th>HP</th><th>Ket.</th></tr>' + j.logs.map(r =>
@@ -480,6 +485,29 @@ async function vLog() {
   } catch (e) { $('#lg').textContent = e.message; }
 }
 
+async function loadBackups() {
+  try {
+    const j = await api('backups');
+    $('#bk7').innerHTML = (j.list.length ? '<table><tr><th>File backup</th><th>Dibuat</th><th></th></tr>' + j.list.map(f =>
+      `<tr><td>${esc(f.name)}</td><td>${esc(f.tgl)}</td><td><button class="sm" onclick="dlPdf('${esc(f.id)}')">Unduh PDF</button></td></tr>`).join('') + '</table>'
+      : '<p class="mut">Belum ada backup. Backup pertama dibuat otomatis pada jam yang diatur, atau klik tombol di bawah.</p>') +
+      `<p class="mut">Folder di Google Drive: <a href="${esc(j.folder)}" target="_blank" rel="noopener">buka folder backup</a></p>`;
+  } catch (e) { $('#bk7').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+async function dlPdf(id) {
+  try {
+    const j = await api('backupPdf', {id});
+    const bin = atob(j.b64), a = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([a], {type:'application/pdf'}));
+    const l = document.createElement('a'); l.href = url; l.download = j.name; document.body.appendChild(l); l.click(); l.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  } catch (e) { alert(e.message); }
+}
+async function backupHere() {
+  try { const j = await api('backupNow'); toast('bkm', j.msg); loadBackups(); vLogReload(); } catch (e) { toast('bkm', e.message, 1); }
+}
+function vLogReload() { if (tab === 'Log') setTimeout(vLog, 800); }
 async function vSet() {
   $('#tc').innerHTML = `<div class="card">Memuat...</div>`;
   let s, dv;
