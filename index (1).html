@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<title>Billing Video Call</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;800&family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--p:#0f766e;--bg:#f0fdfa;--tx:#134e4a;--card:#ffffff;--mut:#5b7f7b;--bd:#cfe8e4;--bad:#b91c1c;--ok:#15803d;--font:'Poppins',sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);font-size:15px}
+header{background:var(--p);color:#fff;padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top,0px));display:flex;justify-content:space-between;align-items:center;gap:8px}
+header b{font-size:17px}
+header small{opacity:.85;display:block;font-size:12px}
+main{max-width:980px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:16px;margin-bottom:14px}
+h2{margin:0 0 10px;font-size:17px}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+input,select,textarea{width:100%;padding:11px;border:1px solid var(--bd);border-radius:8px;font:inherit;background:var(--card);color:var(--tx)}
+textarea{min-height:110px}
+button{font:inherit;border:0;border-radius:8px;padding:11px 16px;background:var(--p);color:#fff;font-weight:600;cursor:pointer}
+button.sec{background:transparent;color:var(--p);border:1px solid var(--p)}
+button.bad{background:var(--bad)}
+button.sm{padding:6px 10px;font-size:13px}
+button:disabled{opacity:.5}
+:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row>*{flex:1}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:14px}
+.tabs button{flex:none;background:var(--card);color:var(--tx);border:1px solid var(--bd)}
+.tabs button.on{background:var(--p);color:#fff;border-color:var(--p)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+.dev{border:1px solid var(--bd);border-left:6px solid var(--bd);border-radius:8px;padding:10px;background:var(--card);font-size:13px}
+.dev.on{border-left-color:var(--ok)}.dev.login{border-left-color:#d97706}
+.dev b{display:block;font-size:14px}
+.big{font-size:64px;font-weight:700;text-align:center;letter-spacing:2px;margin:6px 0;font-variant-numeric:tabular-nums}
+.warn{background:#fef3c7;color:#92400e;border:2px solid #f59e0b;border-radius:8px;padding:12px;text-align:center;font-weight:700;margin-bottom:12px}
+.err{color:var(--bad);font-size:14px;min-height:20px;margin-top:8px}
+.msg{color:var(--ok);font-size:14px}
+.mut{color:var(--mut);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{border-bottom:1px solid var(--bd);padding:6px;text-align:left}
+.wrap{overflow-x:auto}
+.center{max-width:420px;margin:30px auto}
+@media (prefers-reduced-motion:no-preference){.big.low{animation:bl 1s infinite}@keyframes bl{50%{opacity:.4}}}
+.call{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:3/4;max-height:60vh;margin:0 auto 12px;max-width:480px}
+.remote,.remote video{width:100%;height:100%}.remote video{object-fit:cover}
+.local{position:absolute;right:8px;bottom:8px;width:28%;aspect-ratio:3/4;border:2px solid #fff;border-radius:8px;overflow:hidden;background:#222}
+.local video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.wait{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<header><div><b id="hApp">Billing Video Call</b><small id="hTitle"></small></div><button class="sec sm" id="btnOut" style="display:none;color:#fff;border-color:#fff" onclick="logout()">Keluar</button></header>
+<main id="app"></main>
+
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.js"></script>
+<script>
+/* ====== GANTI DENGAN URL WEB APP APPS SCRIPT ANDA ====== */
+const API = 'PASTE_URL_WEB_APP_DI_SINI';
+/* ======================================================= */
+
+const $ = s => document.querySelector(s);
+const THEMES = {
+  hijau:['#0f766e','#f0fdfa','#134e4a','#ffffff','#5b7f7b','#cfe8e4'],
+  biru:['#1d4ed8','#eff6ff','#1e3a8a','#ffffff','#64748b','#cbd5e1'],
+  ungu:['#6d28d9','#f5f3ff','#3b0764','#ffffff','#6b5b95','#ddd6fe'],
+  oranye:['#c2410c','#fff7ed','#431407','#ffffff','#8a6a5a','#fed7aa'],
+  gelap:['#38bdf8','#0f172a','#e2e8f0','#1e293b','#94a3b8','#334155']
+};
+const FONTS = {Poppins:"'Poppins',sans-serif",Nunito:"'Nunito',sans-serif",Sistem:"system-ui,sans-serif",Serif:"Georgia,serif"};
+let S = {}, CFG = {slotCount:20,warnSec:60}, T = {}, tab = '';
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(action, data = {}) {
+  const r = await fetch(API, {method:'POST', body:JSON.stringify({action, token:S.token, ...data})});
+  const j = await r.json();
+  if (!j.ok) { if (/Sesi habis|dinonaktifkan/.test(j.error) && S.token) { toLogin(j.error); } throw new Error(j.error); }
+  return j;
+}
+function applyCfg(c) {
+  CFG = Object.assign(CFG, c);
+  const t = THEMES[CFG.theme] || THEMES.hijau, r = document.documentElement.style;
+  ['--p','--bg','--tx','--card','--mut','--bd'].forEach((k, i) => r.setProperty(k, t[i]));
+  r.setProperty('--font', FONTS[CFG.font] || FONTS.Poppins);
+  $('#hApp').textContent = CFG.appName; $('#hTitle').textContent = CFG.title;
+  document.title = CFG.appName;
+  document.querySelector('meta[name=theme-color]').content = t[0];
+}
+function stopTimers() { lkLeave(); clearInterval(T.tick); clearInterval(T.beat); clearInterval(T.poll); if (T.wl) { try { T.wl.release(); } catch(e){} T.wl = null; } }
+
+/* ================= LOGIN ================= */
+async function init() {
+  try { const j = await api('config'); applyCfg(j.cfg); } catch (e) {}
+  const R = new URLSearchParams(location.search).get('r');
+  if (R) return guestView(R.toUpperCase());
+  toLogin();
+}
+function toLogin(msg) {
+  stopTimers(); S = {slot:S.slot}; S.slot = Number(localStorage.getItem('slot') || 0);
+  $('#btnOut').style.display = 'none';
+  if (!S.slot) return slotSetup();
+  $('#app').innerHTML = `<div class="card center"><h2>Masuk</h2>
+  <label for="u">Username</label><input id="u" autocomplete="off" autocapitalize="off">
+  <label for="p">Kata sandi</label><input id="p" type="password" autocomplete="off">
+  <div class="err" id="e">${esc(msg||'')}</div>
+  <button style="width:100%;margin-top:6px" id="bl" onclick="doLogin()">Masuk</button>
+  <p class="mut" style="text-align:center">HP nomor ${S.slot} · <a href="#" onclick="slotSetup();return false">ubah</a></p></div>`;
+  $('#p').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+}
+function slotSetup() {
+  let o = ''; for (let i = 1; i <= CFG.slotCount; i++) o += `<option>${i}</option>`;
+  $('#app').innerHTML = `<div class="card center"><h2>Atur nomor HP ini</h2>
+  <p class="mut">Pilih nomor HP (1-${CFG.slotCount}) sesuai label di HP ini. Cukup sekali.</p>
+  <select id="sl">${o}</select><button style="width:100%;margin-top:12px" onclick="localStorage.setItem('slot',$('#sl').value);toLogin()">Simpan</button>
+  <p class="mut" style="margin-top:12px">Akun pengawas/pemilik bisa masuk tanpa mengatur ini.</p>
+  <button class="sec" style="width:100%" onclick="S.slot=0;staffLogin()">Masuk sebagai pengawas/pemilik</button></div>`;
+}
+function staffLogin() {
+  $('#app').innerHTML = `<div class="card center"><h2>Masuk staf</h2>
+  <label>Username</label><input id="u" autocapitalize="off"><label>Kata sandi</label><input id="p" type="password">
+  <div class="err" id="e"></div><button style="width:100%" onclick="doLogin(true)">Masuk</button></div>`;
+}
+async function doLogin(staff) {
+  const u = $('#u').value.trim(), p = $('#p').value;
+  if (!u || !p) { $('#e').textContent = 'Isi username dan kata sandi'; return; }
+  try {
+    const j = await api('login', {username:u, password:p, slot:staff ? 0 : S.slot});
+    S = {...S, token:j.token, role:j.role, nama:j.nama, user:j.user, allowed:j.allowed, ortu:j.ortu};
+    $('#btnOut').style.display = '';
+    if (j.role === 'santri') santriHome(); else staffHome();
+  } catch (e) { $('#e').textContent = e.message; }
+}
+async function logout() {
+  const wasSantri = S.role === 'santri';
+  try { await api(wasSantri ? 'end' : 'logout', {reason:'logout'}); } catch (e) {}
+  S.token = null; toLogin();
+}
+
+/* ================= VIDEO (LiveKit) ================= */
+let ROOM = null;
+function callBox(wait) {
+  return `<div class="call"><div id="remote" class="remote"></div><div class="wait" id="wait">${wait}</div><div id="local" class="local"></div></div>
+  <div id="net" class="warn" style="display:none"></div>
+  <button id="snd" style="display:none;width:100%;margin-bottom:10px" onclick="ROOM&&ROOM.startAudio().then(()=>this.style.display='none')">Ketuk di sini untuk mengaktifkan suara</button>`;
+}
+function lkNote(msg) { const w = $('#net'); if (w) { w.textContent = msg || ''; w.style.display = msg ? 'block' : 'none'; } }
+async function lkEnsureMedia() {   // pulihkan mikrofon/kamera yang mati (mis. setelah pindah ke WhatsApp)
+  const room = ROOM; if (!room) return;
+  const L = LivekitClient, lp = room.localParticipant;
+  try {
+    const mic = lp.getTrackPublication(L.Track.Source.Microphone);
+    const mt = mic && mic.track && mic.track.mediaStreamTrack;
+    if (!mic || !mt || mt.readyState === 'ended' || mic.isMuted) { await lp.setMicrophoneEnabled(false); await lp.setMicrophoneEnabled(true); }
+    if (!S.lowNet) {
+      const cam = lp.getTrackPublication(L.Track.Source.Camera);
+      const ct = cam && cam.track && cam.track.mediaStreamTrack;
+      if (!cam || !ct || ct.readyState === 'ended') { const p = await lp.setCameraEnabled(true); lkLocalPreview(p); }
+    }
+    await room.startAudio();
+  } catch (e) {}
+}
+function lkLocalPreview(p) {
+  if (p && p.track) { const v = p.track.attach(); v.muted = true; v.setAttribute('playsinline', ''); const l = $('#local'); if (l) { l.innerHTML = ''; l.appendChild(v); } }
+}
+async function lkConnect(url, token) {
+  await lkLeave();
+  const L = LivekitClient;
+  S.lowNet = false;
+  const room = new L.Room({adaptiveStream:true, dynacast:true,
+    audioCaptureDefaults:{echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1},
+    videoCaptureDefaults:{resolution:L.VideoPresets.h360.resolution},
+    publishDefaults:{red:true, dtx:false, audioPreset:L.AudioPresets.speech,
+      videoEncoding:{maxBitrate:350000, maxFramerate:15}}});
+  ROOM = room;
+  room.on(L.RoomEvent.TrackSubscribed, t => {
+    const el = t.attach();
+    el.setAttribute('playsinline', '');
+    if (t.kind === 'video') { const r = $('#remote'); if (r) { r.innerHTML = ''; r.appendChild(el); } const w = $('#wait'); if (w) w.style.display = 'none'; }
+    else { el.dataset.lk = 1; el.volume = 1; document.body.appendChild(el); }
+  });
+  room.on(L.RoomEvent.TrackUnsubscribed, t => t.detach().forEach(e => e.remove()));
+  room.on(L.RoomEvent.Disconnected, () => { if (ROOM === room && S.onDisc) S.onDisc(); });
+  // suara diblokir browser -> tampilkan tombol
+  room.on(L.RoomEvent.AudioPlaybackStatusChanged, () => {
+    const b = $('#snd'); if (b) b.style.display = room.canPlaybackAudio ? 'none' : 'block';
+  });
+  room.on(L.RoomEvent.Reconnecting, () => lkNote('Menyambung ulang jaringan...'));
+  room.on(L.RoomEvent.Reconnected, () => { lkNote(''); lkEnsureMedia(); });
+  // jaringan jelek: matikan kamera dulu agar suara tetap jernih
+  room.on(L.RoomEvent.ConnectionQualityChanged, (q, p) => {
+    if (p !== room.localParticipant) return;
+    if ((q === L.ConnectionQuality.Poor || q === L.ConnectionQuality.Lost) && !S.lowNet) {
+      S.lowNet = true; room.localParticipant.setCameraEnabled(false); lkNote('Jaringan lemah: kamera dimatikan sementara agar suara tetap jelas.');
+    } else if (S.lowNet && (q === L.ConnectionQuality.Good || q === L.ConnectionQuality.Excellent)) {
+      S.lowNet = false; lkNote('');
+      room.localParticipant.setCameraEnabled(true).then(lkLocalPreview).catch(() => {});
+    }
+  });
+  await room.connect(url, token);
+  try {
+    await room.localParticipant.setMicrophoneEnabled(true);
+    lkLocalPreview(await room.localParticipant.setCameraEnabled(true));
+  } catch (e) { throw new Error('Izinkan akses kamera dan mikrofon di pengaturan browser, lalu coba lagi.'); }
+  try { await room.startAudio(); } catch (e) {}
+  const b = $('#snd'); if (b) b.style.display = room.canPlaybackAudio ? 'none' : 'block';
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(lkEnsureMedia, 400); });
+async function lkLeave() {
+  const r = ROOM; ROOM = null;
+  if (r) { try { r.disconnect(); } catch (e) {} }
+  document.querySelectorAll('audio[data-lk]').forEach(a => a.remove());
+}
+
+/* ================= ORANG TUA (tamu) ================= */
+function guestView(code) {
+  $('#app').innerHTML = `<div class="card center"><h2>Video call dengan santri</h2>
+  <label for="gn">Nama Anda</label><input id="gn" placeholder="Contoh: Bapak Ahmad">
+  <div class="err" id="e"></div><button style="width:100%;margin-top:8px" onclick="guestJoin('${esc(code)}')">Masuk video call</button>
+  <p class="mut">Izinkan kamera dan mikrofon saat diminta. Panggilan berakhir otomatis saat waktu santri habis.</p></div>`;
+}
+async function guestJoin(code) {
+  try {
+    const j = await api('guestJoin', {code, name:$('#gn').value.trim() || 'Orang tua'});
+    $('#app').innerHTML = `<div class="card center" style="max-width:520px"><h2>Bersama ${esc(j.santri)}</h2>${callBox('Menghubungkan...')}
+    <button class="bad" style="width:100%" onclick="guestEnd()">Akhiri</button></div>`;
+    S.onDisc = () => guestDone('Panggilan berakhir. Terima kasih.');
+    await lkConnect(j.url, j.token);
+  } catch (e) { if ($('#e')) $('#e').textContent = e.message; else guestDone(e.message); }
+}
+function guestEnd() { S.onDisc = null; lkLeave(); guestDone('Panggilan selesai. Terima kasih.'); }
+function guestDone(m) { S.onDisc = null; lkLeave(); $('#app').innerHTML = `<div class="card center"><h2>${esc(m)}</h2><p class="mut">Anda boleh menutup halaman ini.</p></div>`; }
+
+/* ================= SANTRI ================= */
+function santriHome() {
+  S.st = 'login';
+  $('#app').innerHTML = `<div class="card center"><h2>Halo, ${esc(S.nama)}</h2>
+  <p class="mut">Jatah sesi ini: <b>${Math.floor(S.allowed/60)} menit ${S.allowed%60?S.allowed%60+' detik':''}</b></p>
+  <label for="no">Nomor WhatsApp orang tua / keluarga</label>
+  <input id="no" inputmode="tel" placeholder="contoh: 628123456789" value="${esc(S.ortu||'')}">
+  <div class="err" id="e"></div>
+  <button style="width:100%;margin-top:6px" onclick="siapkan()">Mulai video call</button>
+  <p class="mut">Aplikasi membuat ruang, lalu Anda mengirim link ke WhatsApp orang tua. Timer mulai otomatis saat orang tua masuk.</p></div>`;
+  startBeat();
+}
+async function siapkan() {
+  try {
+    const no = $('#no').value;
+    const j = await api('prepare', {nomor:no});
+    S.nomor = no; S.code = j.code; S.st = 'ready'; S.readyMin = j.readyMin;
+    $('#app').innerHTML = `<div class="card center" style="max-width:520px">${callBox('Menunggu orang tua masuk...')}<div id="info"></div></div>`;
+    showReady();
+    S.onDisc = reconnect;
+    await lkConnect(j.url, j.token);
+  } catch (e) { if ($('#e')) $('#e').textContent = e.message; else alert(e.message); }
+}
+async function reconnect() {
+  if (!S.token || (S.st !== 'ready' && S.st !== 'on')) return;
+  try { const j = await api('rejoin'); await lkConnect(j.url, j.token); } catch (e) { toLogin('Koneksi video terputus. Login lagi.'); }
+}
+function showReady() {
+  const link = location.origin + location.pathname + '?r=' + S.code;
+  const num = S.nomor.replace(/^\+/, '').replace(/^0/, '62');
+  const txt = encodeURIComponent('Assalamualaikum, ini link video call dari santri: ' + link);
+  $('#info').innerHTML = `<a href="https://wa.me/${esc(num)}?text=${txt}" target="_blank" rel="noopener"><button style="width:100%;margin-bottom:8px">Kirim link ke WhatsApp orang tua</button></a>
+  <button class="sec" style="width:100%;margin-bottom:8px" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(link)}');this.textContent='Tersalin'">Salin link</button>
+  <p class="mut">Ruang ditutup otomatis jika tidak ada yang masuk dalam ${S.readyMin} menit. Timer mulai saat orang tua masuk.</p>
+  <button class="sec" style="width:100%" onclick="selesai('dibatalkan santri')">Batalkan</button>`;
+}
+function goOn(remaining) {
+  S.st = 'on'; S.endAt = Date.now() + remaining*1000; S.warned = false;
+  $('#info').innerHTML = `<div id="wb"></div><div class="mut" style="text-align:center">Sisa waktu</div><div class="big" id="cd">--:--</div>
+  <button class="bad" style="width:100%" onclick="selesai('selesai oleh santri')">Akhiri panggilan</button>`;
+  try { navigator.wakeLock && navigator.wakeLock.request('screen').then(w => T.wl = w); } catch (e) {}
+  clearInterval(T.tick);
+  T.tick = setInterval(() => {
+    const left = Math.ceil((S.endAt - Date.now())/1000);
+    if (left <= 0) { clearInterval(T.tick); selesai('waktu habis'); return; }
+    const el = $('#cd'); if (!el) return;
+    el.textContent = String(Math.floor(left/60)).padStart(2,'0') + ':' + String(left%60).padStart(2,'0');
+    el.classList.toggle('low', left <= CFG.warnSec);
+    if (left <= CFG.warnSec && !S.warned) { S.warned = true; warn(left); }
+  }, 500);
+}
+function warn(left) {
+  $('#wb').innerHTML = `<div class="warn" role="alert">Waktu tinggal ${left >= 50 ? 'sekitar 1 menit' : left+' detik'}. Segera akhiri pembicaraan.</div>`;
+  try { navigator.vibrate && navigator.vibrate([400,200,400,200,400]); } catch (e) {}
+  try {
+    const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator();
+    o.connect(a.destination); o.frequency.value = 880; o.start(); setTimeout(() => o.stop(), 700);
+  } catch (e) {}
+}
+function startBeat() {
+  clearInterval(T.beat);
+  T.beat = setInterval(async () => {
+    try {
+      const j = await api('beat');
+      if (j.end) return toLogin(j.reason);
+      if (j.status === 'on') { if (S.st !== 'on') goOn(j.remaining); else S.endAt = Date.now() + j.remaining*1000; }
+    } catch (e) {}
+  }, 8000);
+}
+async function selesai(why) {
+  S.onDisc = null;
+  try { await api('end', {reason:why}); } catch (e) {}
+  S.token = null; toLogin(why === 'waktu habis' ? 'Waktu habis. Silakan login lagi.' : 'Sesi selesai.');
+}
+/* saat timer berjalan, aplikasi disembunyikan = sesi mati */
+function kill(reason) {
+  if (S.role === 'santri' && S.token && S.st === 'on') {
+    S.onDisc = null;
+    navigator.sendBeacon(API, JSON.stringify({action:'end', token:S.token, reason}));
+    S.token = null; toLogin('Sesi berakhir karena aplikasi disembunyikan. Login lagi dari awal.');
+  }
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) kill('aplikasi diminimalkan'); });
+
+/* ================= STAF ================= */
+function staffHome() {
+  const owner = S.role === 'pemilik';
+  S.tabs = owner ? ['Dashboard','Perangkat','Santri','Pengawas','Log','Pengaturan'] : ['Perangkat','Pengaturan'];
+  tab = S.tabs[0];
+  $('#app').innerHTML = `<div class="tabs" id="tb"></div><div id="tc"></div>`;
+  showTab(tab);
+}
+function showTab(t) {
+  tab = t; clearInterval(T.poll);
+  $('#tb').innerHTML = S.tabs.map(x => `<button class="${x===t?'on':''}" onclick="showTab('${x}')">${x}</button>`).join('');
+  ({Dashboard:vDash, Perangkat:vDev, Santri:vSantri, Pengawas:vStaff, Log:vLog, Pengaturan:S.role==='pemilik'?vSet:vAddSantri})[t]();
+}
+const fmtDur = s => { s = Number(s)||0; return Math.floor(s/3600)+' jam '+Math.floor(s%3600/60)+' menit '+(s%60)+' detik'; };
+function toast(id, m, bad) { const e = $('#'+id); if (e) { e.className = bad ? 'err' : 'msg'; e.textContent = m; } }
+
+async function vDash() {
+  $('#tc').innerHTML = `<div class="card"><h2>Total durasi pemakaian</h2><div class="big" style="font-size:34px" id="tt">...</div>
+  <p class="mut" id="ts"></p></div>
+  <div class="card"><h2>Reset total durasi</h2><p class="mut">Butuh kata sandi reset dan PIN.</p>
+  <div class="row"><input id="rp" type="password" placeholder="Kata sandi reset"><input id="rn" type="password" inputmode="numeric" placeholder="PIN"></div>
+  <div id="rm" class="err"></div><button class="bad" onclick="resetTotal()">Reset total durasi</button></div>`;
+  try { const j = await api('stats'); $('#tt').textContent = fmtDur(j.totalDetik);
+    $('#ts').textContent = `Sedang online: ${j.online} HP · Terdaftar: ${j.santri-0} akun santri/staf`; } catch (e) {}
+}
+async function resetTotal() {
+  if (!confirm('Yakin reset total durasi ke 0?')) return;
+  try { await api('resetTotal', {pass:$('#rp').value, pin:$('#rn').value}); toast('rm','Total durasi sudah direset.'); vDash(); } catch (e) { toast('rm', e.message, 1); }
+}
+
+function vDev() {
+  $('#tc').innerHTML = `<div class="grid" id="dg"><p class="mut">Memuat...</p></div>`;
+  const load = async () => {
+    try {
+      const j = await api('devices');
+      $('#dg').innerHTML = j.devices.map(d => {
+        const m = Math.floor(d.remaining/60), s = d.remaining%60;
+        return `<div class="dev ${d.status}"><b>${esc(d.nama)}</b>${d.status==='idle'?'<span class="mut">Kosong</span>':
+        `${esc(d.santri)}<br>${d.status==='on'?'Nomor '+esc(d.nomor)+'<br>Sisa '+m+':'+String(s).padStart(2,'0'):'Baru login'}`}
+        <div style="margin-top:8px"><button class="bad sm" onclick="paksa(${d.slot},'${esc(d.nama)}')">Matikan paksa</button></div></div>`;
+      }).join('');
+    } catch (e) {}
+  };
+  load(); T.poll = setInterval(load, 5000);
+}
+async function paksa(slot, nama) {
+  if (!confirm('Matikan paksa video call di ' + nama + '?')) return;
+  try { await api('forceKill', {slot}); } catch (e) { alert(e.message); }
+}
+
+function userForm(pref, withNama = true) {
+  return `<div class="row"><input id="${pref}u" placeholder="Username" autocapitalize="off"><input id="${pref}p" placeholder="Kata sandi">
+  ${withNama?`<input id="${pref}n" placeholder="Nama lengkap">`:''}${pref!=='s'?`<input id="${pref}o" placeholder="No WA orang tua (opsional)">`:''}</div>`;
+}
+function vAddSantri() {
+  $('#tc').innerHTML = `<div class="card"><h2>Tambah akun santri</h2>${userForm('a')}
+  <div id="am" class="err"></div><button onclick="addOne('addUsers','a','am')">Tambah santri</button></div>`;
+}
+async function addOne(act, pref, msg, after) {
+  try {
+    const j = await api(act, {list:[{username:$('#'+pref+'u').value, password:$('#'+pref+'p').value, nama:$('#'+pref+'n').value, ortu:($('#'+pref+'o')||{}).value}]});
+    if (j.added) { toast(msg, 'Berhasil ditambahkan.'); ['u','p','n','o'].forEach(k => { const e = $('#'+pref+k); if (e) e.value = ''; }); if (after) after(); }
+    else toast(msg, 'Gagal: username minimal 3 huruf/angka (tanpa spasi), kata sandi minimal 4, dan username belum dipakai.', 1);
+  } catch (e) { toast(msg, e.message, 1); }
+}
+function vSantri() {
+  $('#tc').innerHTML = `<div class="card"><h2>Tambah akun santri</h2>${userForm('a')}
+  <div id="am" class="err"></div><button onclick="addOne('addUsers','a','am')">Tambah santri</button></div>
+  <div class="card"><h2>Impor banyak santri</h2><p class="mut">Satu baris satu santri: username,kata sandi,nama,no WA orang tua (opsional). Maksimal sekitar 500 baris sekali impor.</p>
+  <textarea id="bulk" placeholder="ahmad01,sandi123,Ahmad Fauzi,628123456789"></textarea><div id="bm" class="err"></div>
+  <button onclick="bulk()">Impor</button></div>
+  <div class="card"><h2>Cari santri</h2><div class="row"><input id="q" placeholder="Username atau nama"><button style="flex:none" onclick="cari()">Cari</button></div>
+  <div class="wrap" id="ql"></div></div>`;
+}
+async function bulk() {
+  const list = $('#bulk').value.split('\n').map(l => l.split(',')).filter(a => a.length >= 2).map(a => ({username:a[0], password:a[1], nama:a[2], ortu:a[3]}));
+  if (!list.length) return toast('bm','Format belum benar.',1);
+  try { const j = await api('addUsers', {list}); toast('bm', `Berhasil ${j.added}, dilewati ${j.skippedCount}${j.skipped.length?' ('+j.skipped.join(', ')+')':''}`); } catch (e) { toast('bm', e.message, 1); }
+}
+async function cari() { listUsers('santri', $('#q').value, 'ql'); }
+async function listUsers(role, q, target) {
+  try {
+    const j = await api('listUsers', {role, q});
+    $('#'+target).innerHTML = '<table><tr><th>Username</th><th>Nama</th><th>Login terakhir</th><th></th></tr>' + j.users.map(u =>
+      `<tr><td>${esc(u.username)}</td><td>${esc(u.nama)}</td><td>${esc(u.login||'-')}</td><td style="white-space:nowrap">
+      <button class="sec sm" onclick="tog('${esc(u.username)}',${!u.aktif},'${role}')">${u.aktif?'Nonaktifkan':'Aktifkan'}</button>
+      <button class="sec sm" onclick="gp('${esc(u.username)}')">Sandi</button>
+      <button class="bad sm" onclick="del('${esc(u.username)}','${role}')">Hapus</button></td></tr>`).join('') + '</table>' + (j.users.length?'':'<p class="mut">Tidak ada data.</p>');
+  } catch (e) { $('#'+target).innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+const refresh = role => role === 'pengawas' ? listUsers('pengawas','', 'sl') : cari();
+async function tog(u, a, role) { try { await api('toggleUser', {username:u, aktif:a}); refresh(role); } catch (e) { alert(e.message); } }
+async function del(u, role) { if (!confirm('Hapus akun ' + u + '?')) return; try { await api('deleteUser', {username:u}); refresh(role); } catch (e) { alert(e.message); } }
+async function gp(u) { const p = prompt('Kata sandi baru untuk ' + u + ' (minimal 4 karakter):'); if (!p) return; try { await api('setPass', {username:u, password:p}); alert('Kata sandi diganti.'); } catch (e) { alert(e.message); } }
+
+function vStaff() {
+  $('#tc').innerHTML = `<div class="card"><h2>Tambah akun pengawas (maks. 20)</h2>${userForm('s')}
+  <div id="sm" class="err"></div><button onclick="addOne('addStaff','s','sm',()=>listUsers('pengawas','','sl'))">Tambah pengawas</button></div>
+  <div class="card"><h2>Daftar pengawas</h2><div class="wrap" id="sl"></div></div>`;
+  listUsers('pengawas', '', 'sl');
+}
+async function vLog() {
+  $('#tc').innerHTML = `<div class="card"><h2>Log aktivitas terbaru</h2><p class="mut">Dicadangkan ke Google Drive otomatis tiap hari lalu dikosongkan.</p><div class="wrap" id="lg">Memuat...</div></div>`;
+  try {
+    const j = await api('logs');
+    $('#lg').innerHTML = '<table><tr><th>Waktu</th><th>Santri</th><th>Kontak</th><th>Durasi</th><th>HP</th><th>Ket.</th></tr>' + j.logs.map(r =>
+      `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[3])}</td><td>${Math.floor(r[4]/60)}m ${r[4]%60}d</td><td>${esc(r[5])}</td><td>${esc(r[6])}</td></tr>`).join('') + '</table>';
+  } catch (e) { $('#lg').textContent = e.message; }
+}
+
+async function vSet() {
+  $('#tc').innerHTML = `<div class="card">Memuat...</div>`;
+  let s, dv;
+  try { s = (await api('getSettings')).settings; dv = (await api('devices')).devices; } catch (e) { $('#tc').innerHTML = esc(e.message); return; }
+  const opt = (o, v) => Object.keys(o).map(k => `<option ${k===v?'selected':''}>${k}</option>`).join('');
+  const f = (id, l, v, t = 'text') => `<div><label>${l}</label><input id="f_${id}" type="${t}" value="${esc(v)}"></div>`;
+  $('#tc').innerHTML = `<div class="card"><h2>Tampilan</h2><div class="row">${f('appName','Nama aplikasi',s.appName)}${f('title','Judul aplikasi',s.title)}</div>
+  <div class="row"><div><label>Tema</label><select id="f_theme">${opt(THEMES,s.theme)}</select></div><div><label>Jenis huruf</label><select id="f_font">${opt(FONTS,s.font)}</select></div></div></div>
+  <div class="card"><h2>Server LiveKit</h2><p class="mut">Alamat wss://..., API Key, dan API Secret dari LiveKit. Secret kosong = tidak diubah${s.lkSet?' (sudah tersimpan)':' (belum diisi)'}.</p>
+  <div class="row">${f('lkUrl','Alamat server (wss://...)',s.lkUrl)}${f('lkKey','API Key',s.lkKey)}${f('lkSecret','API Secret','','password')}</div>
+  <button class="sec" style="margin-top:10px" onclick="testLk()">Tes koneksi LiveKit</button> <span id="tm" class="mut"></span></div>
+  <div class="card"><h2>Waktu</h2><div class="row">${f('sessionMin','Menit per sesi',s.sessionMin,'number')}${f('dailyQuotaMin','Jatah menit per santri per hari',s.dailyQuotaMin,'number')}${f('warnSec','Peringatan (detik sebelum habis)',s.warnSec,'number')}</div></div>
+  <div class="card"><h2>Perangkat & backup</h2><div class="row">${f('slotCount','Jumlah HP aktif (maks 30)',s.slotCount,'number')}${f('backupHour','Jam backup otomatis (0-23)',s.backupHour,'number')}${f('readyMin','Batas tunggu orang tua masuk (menit)',s.readyMin,'number')}</div>
+
+  <button class="sec" style="margin-top:10px" onclick="backup()">Backup log sekarang</button> <span id="bk" class="mut"></span></div>
+  <div class="card"><h2>Kata sandi & PIN</h2><p class="mut">Kosongkan jika tidak ingin mengubah.</p>
+  <div class="row">${f('resetPass','Kata sandi reset total durasi','','password')}${f('resetPin','PIN reset total durasi','','password')}</div>
+  <label>Ganti kata sandi akun pemilik</label><div class="row"><input id="mypass" type="password" placeholder="Kata sandi baru"></div></div>
+  <button style="width:100%" onclick="saveSet()">Simpan pengaturan</button><div id="st" class="err"></div>
+  <div class="card" style="margin-top:14px"><h2>Nama HP</h2><p class="mut">Ubah nama tampilan tiap HP (sesuai stiker).</p>
+  <div class="wrap"><table>${dv.map(d => `<tr><td>${d.slot}</td><td><input id="dn${d.slot}" value="${esc(d.nama)}"></td><td style="white-space:nowrap"><button class="sec sm" onclick="saveDev(${d.slot})">Simpan</button></td></tr>`).join('')}</table></div></div>`;
+}
+async function saveSet() {
+  const o = {}; ['appName','title','theme','font','sessionMin','dailyQuotaMin','warnSec','slotCount','backupHour','readyMin','lkUrl','lkKey','lkSecret','resetPass','resetPin'].forEach(k => o[k] = $('#f_'+k).value);
+  try {
+    await api('saveSettings', {settings:o});
+    const mp = $('#mypass').value; if (mp) await api('setPass', {username:S.user, password:mp});
+    applyCfg({appName:o.appName, title:o.title, theme:o.theme, font:o.font, warnSec:Number(o.warnSec), slotCount:Number(o.slotCount)});
+    toast('st','Pengaturan tersimpan.');
+  } catch (e) { toast('st', e.message, 1); }
+}
+async function saveDev(n) { try { await api('saveDevice', {slot:n, nama:$('#dn'+n).value}); alert('Tersimpan'); } catch (e) { alert(e.message); } }
+async function testLk() { toast('tm','Menguji...'); try { const j = await api('testLk'); toast('tm', j.msg); } catch (e) { toast('tm', e.message, 1); } }
+async function backup() { try { const j = await api('backupNow'); toast('bk', j.msg); } catch (e) { toast('bk', e.message, 1); } }
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+init();
+</script>
+</body>
+</html>
