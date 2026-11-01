@@ -594,7 +594,7 @@ async function vSet() {
 }
 async function ortuTest() {
   try { const j = await api('ortuTest', {username:$('#tu').value.trim(), base:location.origin + location.pathname});
-    toast('tum', j.n ? 'Dering uji dikirim ke ' + j.n + ' HP.' : 'Tidak ada HP terhubung, atau kunci Firebase (FCM_SA) belum diisi.', !j.n); }
+    toast('tum', j.n ? 'Dering uji dikirim ke ' + j.n + ' HP.' : 'Dering gagal: ' + (j.why || 'sebab tidak diketahui'), !j.n); }
   catch (e) { toast('tum', e.message, 1); }
 }
 async function saveSet() {
