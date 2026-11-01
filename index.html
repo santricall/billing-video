@@ -272,6 +272,7 @@ async function guestView(code) {
   let nm = '';
   try { nm = (await api('guestPeek', {code})).santri; }
   catch (e) { return guestDone(e.message); }
+  if (new URLSearchParams(location.search).get('auto') === '1') return guestJoin(code);
   $('#app').innerHTML = `<div class="card center" style="text-align:center"><h2>Panggilan video masuk</h2>
   <div class="big" style="font-size:28px;letter-spacing:0">${esc(nm)}</div><p class="mut">sedang menghubungi Anda</p>
   <label for="gn">Nama Anda (boleh dikosongkan)</label><input id="gn" placeholder="Contoh: Bapak Ahmad">
@@ -283,7 +284,7 @@ async function guestView(code) {
 async function guestJoin(code) {
   ringStop();
   try {
-    const j = await api('guestJoin', {code, name:$('#gn').value.trim() || 'Orang tua'});
+    const j = await api('guestJoin', {code, name:(($('#gn') || {value:''}).value || '').trim() || 'Orang tua'});
     $('#app').innerHTML = `<div class="card center" style="max-width:520px"><h2>Bersama ${esc(j.santri)}</h2>${callBox('Menghubungkan...')}
     <button class="bad" style="width:100%" onclick="guestEnd()">Akhiri</button></div>`;
     S.onDisc = () => guestDone('Panggilan berakhir. Terima kasih.');
@@ -308,8 +309,8 @@ function santriHome() {
 async function siapkan() {
   try {
     const no = $('#no').value;
-    const j = await api('prepare', {nomor:no});
-    S.nomor = no; S.code = j.code; S.st = 'ready'; S.readyMin = j.readyMin;
+    const j = await api('prepare', {nomor:no, base:location.origin + location.pathname});
+    S.nomor = no; S.code = j.code; S.st = 'ready'; S.readyMin = j.readyMin; S.ortuN = j.ortuN || 0;
     $('#app').innerHTML = `<div class="card center" style="max-width:520px">${callBox('Menunggu orang tua masuk...')}<div id="info"></div></div>`;
     showReady();
     ringStart();
@@ -328,11 +329,26 @@ function showReady() {
   const txt2 = encodeURIComponent('Pengingat: ' + S.nama + ' sedang menunggu panggilan video. Mohon segera klik link ini: ' + link);
   $('#info').innerHTML = `<a href="https://wa.me/${esc(num)}?text=${txt}" target="_blank" rel="noopener"><button style="width:100%;margin-bottom:8px">Kirim link ke WhatsApp orang tua</button></a>
   <button class="sec" style="width:100%;margin-bottom:8px" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(link)}');this.textContent='Tersalin'">Salin link</button>
+  <div id="ortuBox" style="display:none"><p id="ortuSt" class="mut" style="text-align:center"></p>
+  <button id="orb" class="sec" style="display:none;width:100%;margin-bottom:8px" onclick="ortuRing()">Dering ulang ke HP orang tua</button></div>
   <a id="rm" style="display:none" href="https://wa.me/${esc(num)}?text=${txt2}" target="_blank" rel="noopener"><button class="sec" style="width:100%;margin-bottom:8px">Kirim pengingat lagi</button></a>
   <button class="sec sm" style="margin-bottom:8px" onclick="ringStop()">Bisukan nada tunggu</button>
   <p class="mut">Ruang ditutup otomatis jika tidak ada yang masuk dalam ${S.readyMin} menit. Timer mulai saat orang tua masuk.</p>
   <button class="sec" style="width:100%" onclick="selesai('dibatalkan santri')">Batalkan</button>`;
+  ortuShow('ringing');
   setTimeout(() => { const e = $('#rm'); if (e && S.st === 'ready') e.style.display = 'block'; }, 30000);
+}
+function ortuShow(st) {
+  const box = $('#ortuBox'); if (!box || !S.ortuN) return;
+  box.style.display = 'block';
+  $('#ortuSt').textContent = st === 'ringing' ? 'Sedang berdering di HP orang tua (aplikasi SantriCall)...'
+    : st === 'declined' ? 'Orang tua menolak panggilan.'
+    : st === 'timeout' ? 'Belum dijawab di HP orang tua.' : '';
+  const b = $('#orb'); if (b) b.style.display = (st === 'timeout' || st === 'declined') ? 'block' : 'none';
+}
+async function ortuRing() {
+  try { const j = await api('ortuRing', {base:location.origin + location.pathname}); S.ortuN = j.n || S.ortuN; ortuShow('ringing'); }
+  catch (e) { alert(e.message); }
 }
 function goOn(remaining) {
   ringStop();
@@ -364,6 +380,7 @@ function startBeat() {
     try {
       const j = await api('beat');
       if (j.end) return toLogin(j.reason);
+      if (S.st === 'ready') ortuShow(j.ortu);
       if (j.status === 'on') { if (S.st !== 'on') goOn(j.remaining); else S.endAt = Date.now() + j.remaining*1000; }
     } catch (e) {}
   }, 8000);
@@ -443,10 +460,14 @@ function vAddSantri() {
 }
 async function addOne(act, pref, msg, after) {
   try {
+    const uname = $('#'+pref+'u').value.trim();
     const j = await api(act, {list:[{username:$('#'+pref+'u').value, password:$('#'+pref+'p').value, nama:$('#'+pref+'n').value, ortu:($('#'+pref+'o')||{}).value}]});
-    if (j.added) { toast(msg, 'Berhasil ditambahkan.'); ['u','p','n','o'].forEach(k => { const e = $('#'+pref+k); if (e) e.value = ''; }); if (after) after(); }
+    if (j.added) { toast(msg, 'Berhasil ditambahkan.'); if (act === 'addUsers') ortuShowCode(msg, uname); ['u','p','n','o'].forEach(k => { const e = $('#'+pref+k); if (e) e.value = ''; }); if (after) after(); }
     else toast(msg, 'Gagal: username minimal 3 huruf/angka (tanpa spasi), kata sandi minimal 4, dan username belum dipakai.', 1);
   } catch (e) { toast(msg, e.message, 1); }
+}
+async function ortuShowCode(m, u) {
+  try { const c = await api('ortuCode', {username:u}); toast(m, 'Berhasil ditambahkan. Kode HP orang tua (aplikasi SantriCall): ' + c.kode); } catch (e) {}
 }
 function vSantri() {
   $('#tc').innerHTML = `<div class="card"><h2>Tambah akun santri</h2>${userForm('a')}
@@ -484,9 +505,11 @@ function editU(u, role) {
   <label>Nama lengkap</label><input id="en" value="${esc(x.nama)}">
   ${role === 'pengawas' ? '' : `<label>No WA orang tua</label><input id="eo" inputmode="tel" value="${esc(x.ortu)}">`}
   <label>Kata sandi baru (kosongkan jika tidak diubah)</label><input id="ep" type="password" autocomplete="new-password">
+  ${role === 'pengawas' ? '' : '<div class="mut" id="ek" style="margin-top:8px">Kode HP orang tua: memuat...</div>'}
   <div id="em" class="err"></div>
   <div class="row"><button onclick="saveU('${esc(x.username)}','${role}')">Simpan perubahan</button><button class="sec" onclick="$('#md').remove()">Batal</button></div></div>`;
   document.body.appendChild(m);
+  if (role !== 'pengawas') api('ortuCode', {username:u}).then(j => { const e = $('#ek'); if (e) e.textContent = 'Kode HP orang tua (aplikasi SantriCall): ' + j.kode; }).catch(() => {});
 }
 async function saveU(old, role) {
   const nu = $('#eu').value.trim();
@@ -557,18 +580,25 @@ async function vSet() {
   <div class="row">${f('lkUrl','Alamat server (wss://...)',s.lkUrl)}${f('lkKey','API Key',s.lkKey)}${f('lkSecret','API Secret','','password')}</div>
   <button class="sec" style="margin-top:10px" onclick="testLk()">Tes koneksi LiveKit</button> <span id="tm" class="mut"></span></div>
   <div class="card"><h2>Waktu</h2><div class="row">${f('sessionMin','Menit per sesi',s.sessionMin,'number')}${f('dailyQuotaMin','Jatah menit per santri per hari',s.dailyQuotaMin,'number')}${f('warnSec','Peringatan (detik sebelum habis)',s.warnSec,'number')}</div></div>
-  <div class="card"><h2>Perangkat & backup</h2><div class="row">${f('slotCount','Jumlah HP aktif (maks 30)',s.slotCount,'number')}${f('backupHour','Jam backup otomatis (0-23)',s.backupHour,'number')}${f('readyMin','Batas tunggu orang tua masuk (menit)',s.readyMin,'number')}</div>
+  <div class="card"><h2>Perangkat & backup</h2><div class="row">${f('slotCount','Jumlah HP aktif (maks 30)',s.slotCount,'number')}${f('backupHour','Jam backup otomatis (0-23)',s.backupHour,'number')}${f('readyMin','Batas tunggu orang tua masuk (menit)',s.readyMin,'number')}${f('ringSec','Lama dering di HP orang tua (detik)',s.ringSec,'number')}${f('ringMax','Maks. dering ulang',s.ringMax,'number')}</div>
 
   <button class="sec" style="margin-top:10px" onclick="backup()">Backup log sekarang</button> <span id="bk" class="mut"></span></div>
   <div class="card"><h2>Kata sandi & PIN</h2><p class="mut">Kosongkan jika tidak ingin mengubah.</p>
   <div class="row">${f('resetPass','Kata sandi reset total durasi','','password')}${f('resetPin','PIN reset total durasi','','password')}</div>
   <label>Ganti kata sandi akun pemilik</label><div class="row"><input id="mypass" type="password" placeholder="Kata sandi baru"></div></div>
+  <div class="card"><h2>Uji aplikasi SantriCall (HP orang tua)</h2><p class="mut">Mengirim dering uji ke HP orang tua yang sudah terhubung dengan santri tertentu.</p>
+  <div class="row"><input id="tu" placeholder="Username santri" autocapitalize="off"><button style="flex:none" onclick="ortuTest()">Kirim dering uji</button></div><div id="tum" class="mut"></div></div>
   <button style="width:100%" onclick="saveSet()">Simpan pengaturan</button><div id="st" class="err"></div>
   <div class="card" style="margin-top:14px"><h2>Nama HP</h2><p class="mut">Ubah nama tampilan tiap HP (sesuai stiker).</p>
   <div class="wrap"><table>${dv.map(d => `<tr><td>${d.slot}</td><td><input id="dn${d.slot}" value="${esc(d.nama)}"></td><td style="white-space:nowrap"><button class="sec sm" onclick="saveDev(${d.slot})">Simpan</button></td></tr>`).join('')}</table></div></div>`;
 }
+async function ortuTest() {
+  try { const j = await api('ortuTest', {username:$('#tu').value.trim(), base:location.origin + location.pathname});
+    toast('tum', j.n ? 'Dering uji dikirim ke ' + j.n + ' HP.' : 'Tidak ada HP terhubung, atau kunci Firebase (FCM_SA) belum diisi.', !j.n); }
+  catch (e) { toast('tum', e.message, 1); }
+}
 async function saveSet() {
-  const o = {}; ['appName','title','theme','font','sessionMin','dailyQuotaMin','warnSec','slotCount','backupHour','readyMin','lkUrl','lkKey','lkSecret','resetPass','resetPin'].forEach(k => o[k] = $('#f_'+k).value);
+  const o = {}; ['appName','title','theme','font','sessionMin','dailyQuotaMin','warnSec','slotCount','backupHour','readyMin','ringSec','ringMax','lkUrl','lkKey','lkSecret','resetPass','resetPin'].forEach(k => o[k] = $('#f_'+k).value);
   try {
     await api('saveSettings', {settings:o});
     const mp = $('#mypass').value; if (mp) await api('setPass', {username:S.user, password:mp});
