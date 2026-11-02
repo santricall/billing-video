@@ -57,6 +57,8 @@ td,th{border-bottom:1px solid var(--bd);padding:6px;text-align:left}
 .local{position:absolute;right:8px;bottom:8px;width:28%;aspect-ratio:3/4;border:2px solid #fff;border-radius:8px;overflow:hidden;background:#222}
 .local video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 .wait{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;text-align:center;padding:20px}
+.sc-wa-action{display:inline-block;background:var(--p);color:#fff;font-weight:700;text-decoration:none;border-radius:8px;padding:11px 16px;margin:7px 0}
+.sc-wa-action:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
 </style>
 </head>
 <body>
@@ -394,7 +396,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) kill(
 /* ================= STAF ================= */
 function staffHome() {
   const owner = S.role === 'pemilik';
-  S.tabs = owner ? ['Dashboard','Perangkat','Santri','Pengawas','Log','Pengaturan'] : ['Perangkat','Pengaturan'];
+  S.tabs = owner ? ['Dashboard','Perangkat','Santri','Top Up','Master Token','Pengawas','Log','Pengaturan'] : ['Perangkat','Top Up','Pengaturan'];
   tab = S.tabs[0];
   $('#app').innerHTML = `<div class="tabs" id="tb"></div><div id="tc"></div>`;
   showTab(tab);
@@ -402,7 +404,7 @@ function staffHome() {
 function showTab(t) {
   tab = t; clearInterval(T.poll);
   $('#tb').innerHTML = S.tabs.map(x => `<button class="${x===t?'on':''}" onclick="showTab('${x}')">${x}</button>`).join('');
-  ({Dashboard:vDash, Perangkat:vDev, Santri:vSantri, Pengawas:vStaff, Log:vLog, Pengaturan:S.role==='pemilik'?vSet:vAddSantri})[t]();
+  ({Dashboard:vDash, Perangkat:vDev, Santri:vSantri, 'Top Up':vTokenTopUp, 'Master Token':vTokenMaster, Pengawas:vStaff, Log:vLog, Pengaturan:S.role==='pemilik'?vSet:vAddSantri})[t]();
 }
 const fmtDur = s => { s = Number(s)||0; return Math.floor(s/3600)+' jam '+Math.floor(s%3600/60)+' menit '+(s%60)+' detik'; };
 function toast(id, m, bad) { const e = $('#'+id); if (e) { e.className = bad ? 'err' : 'msg'; e.textContent = m; } }
@@ -463,7 +465,13 @@ function vSantri() {
   <textarea id="bulk" placeholder="ahmad01,sandi123,Ahmad Fauzi,628123456789"></textarea><div id="bm" class="err"></div>
   <button onclick="bulk()">Impor</button></div>
   <div class="card"><h2>Cari santri</h2><div class="row"><input id="q" placeholder="Username atau nama"><button style="flex:none" onclick="cari()">Cari</button></div>
-  <div class="wrap" id="ql"></div></div>`;
+  <div class="wrap" id="ql"></div></div>
+  <div class="card"><h2>10 Santri dengan Token Terbanyak</h2><div class="wrap" id="tkTopSantri">Memuat...</div></div>
+  <div class="card"><h2>Saldo Token Seluruh Santri</h2>
+  <div class="row"><input id="tkCariSantri" placeholder="Cari nama atau username" oninput="tkRenderSantriSaldo()">
+  <select id="tkUrutSantri" onchange="tkRenderSantriSaldo()"><option value="nama">Urut nama A-Z</option><option value="tertinggi">Token tertinggi</option><option value="terendah">Token terendah</option></select></div>
+  <div class="wrap" id="tkDaftarSantri">Memuat...</div></div>`;
+  tkLoadSantriExtras();
 }
 async function bulk() {
   const list = $('#bulk').value.split('\n').map(l => l.split(',')).filter(a => a.length >= 2).map(a => ({username:a[0], password:a[1], nama:a[2], ortu:a[3]}));
@@ -509,6 +517,212 @@ const refresh = role => role === 'pengawas' ? listUsers('pengawas','', 'sl') : c
 async function tog(u, a, role) { try { await api('toggleUser', {username:u, aktif:a}); refresh(role); } catch (e) { alert(e.message); } }
 async function del(u, role) { if (!confirm('Hapus akun ' + u + '?')) return; try { await api('deleteUser', {username:u}); refresh(role); } catch (e) { alert(e.message); } }
 async function gp(u) { const p = prompt('Kata sandi baru untuk ' + u + ' (minimal 4 karakter):'); if (!p) return; try { await api('setPass', {username:u, password:p}); alert('Kata sandi diganti.'); } catch (e) { alert(e.message); } }
+
+/* ================= TOP UP & MASTER TOKEN ================= */
+let TK = {members:[], top10:[], rate:5000, minutes:10};
+const tkRp = n => 'Rp' + (Number(n)||0).toLocaleString('id-ID');
+const tkNum = n => (Number(n)||0).toLocaleString('id-ID', {maximumFractionDigits:2});
+const tkPendingKey = 'sc_token_pending_v1';
+function tkPending() {
+  try { return JSON.parse(sessionStorage.getItem(tkPendingKey) || 'null'); }
+  catch (_) { return null; }
+}
+function tkSavePending(p) { sessionStorage.setItem(tkPendingKey, JSON.stringify(p)); }
+function tkClearPending() { sessionStorage.removeItem(tkPendingKey); }
+function tkNewId() {
+  if (crypto.randomUUID) return 'TK' + crypto.randomUUID().replace(/-/g, '');
+  const a = new Uint8Array(20); crypto.getRandomValues(a);
+  return 'TK' + Array.from(a, x => x.toString(16).padStart(2, '0')).join('');
+}
+async function tkGetMaster() {
+  const j = await api('tokenMaster', {sort:'nama'});
+  TK.members = j.santri || [];
+  TK.top10 = j.top10 || [];
+  TK.rate = Number(j.hargaPaket);
+  TK.minutes = Number(j.menitPaket);
+  if (!(TK.rate > 0 && TK.minutes > 0)) throw new Error('Tarif Master Token belum valid.');
+  return j;
+}
+async function vTokenTopUp() {
+  $('#tc').innerHTML = `<div class="card"><h2>Top Up Token Santri</h2>
+  <p class="mut">Operator cukup memilih santri, nominal pembayaran, lalu konfirmasi. Saldo durasi langsung masuk ke database.</p>
+  <div id="tkWarnPending" class="warn" style="display:none"></div>
+  <label>Cari santri</label><input id="tkCari" placeholder="Ketik nama atau username" oninput="tkFilterChoice()">
+  <label>Pilih santri</label><select id="tkMember" onchange="tkQuote()"><option>Memuat...</option></select>
+  <label>Nominal top up (rupiah)</label>
+  <div class="row"><button type="button" class="sec sm" onclick="tkPickAmount(1)">1 paket</button><button type="button" class="sec sm" onclick="tkPickAmount(2)">2 paket</button><button type="button" class="sec sm" onclick="tkPickAmount(4)">4 paket</button></div>
+  <input id="tkAmount" type="number" min="100" step="100" inputmode="numeric" oninput="tkQuote()">
+  <label>Pembayaran diterima melalui</label><select id="tkMethod"><option>Tunai</option><option>Transfer</option></select>
+  <div class="card" style="margin-top:12px;background:var(--bg)"><div id="tkQuote">Memuat tarif...</div></div>
+  <button id="tkCommit" onclick="tkCommitTopUp()" disabled>Konfirmasi Top Up</button>
+  <div class="msg" id="tkMsg" role="status" aria-live="polite"></div>
+  <p class="mut">Pastikan uang sudah diterima sebelum konfirmasi. Jangan menekan dua kali jika jaringan sedang lambat.</p></div>
+  <div class="card"><h2>Riwayat Pembelian / Pemakaian</h2><button class="sec sm" onclick="tkLoadHistory()">Muat ulang riwayat</button>
+  <div class="wrap" id="tkHistory">Memuat...</div></div>`;
+  try {
+    await tkGetMaster();
+    $('#tkAmount').value = String(TK.rate);
+    tkFilterChoice();
+    tkShowPending();
+    await tkLoadHistory();
+  } catch (e) { toast('tkMsg', e.message, 1); }
+}
+function tkFilterChoice() {
+  const s = $('#tkMember'); if (!s) return;
+  const keep = s.value;
+  const q = ($('#tkCari')?.value || '').trim().toLowerCase();
+  const list = TK.members.filter(x => !q || x.nama.toLowerCase().includes(q) || x.username.toLowerCase().includes(q));
+  s.innerHTML = '<option value="">-- Pilih santri --</option>' + list.map(x =>
+    `<option value="${esc(x.username)}">${esc(x.nama)} (${esc(x.username)}) — ${tkNum(x.token)} token</option>`
+  ).join('');
+  if (list.some(x => x.username === keep)) s.value = keep;
+  else if (list.length === 1) s.value = list[0].username;
+  tkQuote();
+}
+function tkPickAmount(n) { if ($('#tkAmount')) { $('#tkAmount').value = String(TK.rate * n); tkQuote(); } }
+function tkQuote() {
+  const el = $('#tkQuote'), btn = $('#tkCommit'); if (!el || !btn) return;
+  const user = TK.members.find(x => x.username === $('#tkMember')?.value);
+  const amount = Number($('#tkAmount')?.value || 0);
+  const good = user && Number.isSafeInteger(amount) && amount >= 100 &&
+    amount <= 5000000 && amount % TK.rate === 0;
+  if (!good) {
+    el.textContent = 'Pilih santri dan nominal yang merupakan kelipatan ' + tkRp(TK.rate) + '.';
+    btn.disabled = true; return;
+  }
+  const added = (amount / TK.rate) * TK.minutes;
+  el.innerHTML = `<b>${esc(user.nama)}</b><br>Tarif: ${tkRp(TK.rate)} = ${tkNum(TK.minutes)} token<br>
+  Pembelian: <b>${tkRp(amount)}</b> = <b>${tkNum(added)} token / ${tkNum(added)} menit</b><br>
+  Saldo sekarang: ${tkNum(user.token)} token (${esc(user.durasi)})<br>
+  Saldo setelah top up: <b>${tkNum(user.token + added)} token</b>`;
+  btn.disabled = !!tkPending();
+}
+function tkShowPending() {
+  const box = $('#tkWarnPending'), btn = $('#tkCommit'); if (!box) return;
+  const p = tkPending();
+  box.style.display = p ? '' : 'none';
+  if (p) {
+    box.textContent = 'Ada transaksi yang belum dipastikan hasilnya: ' + p.username +
+      ', ' + tkRp(p.nominal) + '. Jangan membuat transaksi baru dahulu.';
+    const retry = document.createElement('button'); retry.className = 'sec sm';
+    retry.textContent = 'Periksa / ulangi transaksi yang sama';
+    retry.onclick = tkRetryPending;
+    box.appendChild(document.createElement('br')); box.appendChild(retry);
+    if (btn) btn.disabled = true;
+  } else tkQuote();
+}
+async function tkCommitTopUp() {
+  const user = TK.members.find(x => x.username === $('#tkMember')?.value);
+  const nominal = Number($('#tkAmount')?.value || 0);
+  const metode = $('#tkMethod')?.value || 'Tunai';
+  if (!user || !Number.isSafeInteger(nominal) || nominal < 100 ||
+      nominal > 5000000 || nominal % TK.rate !== 0) return toast('tkMsg','Periksa santri dan nominal.',1);
+  if (tkPending()) return tkShowPending();
+  const minutes = nominal / TK.rate * TK.minutes;
+  if (!confirm('Pembayaran ' + tkRp(nominal) + ' dari ' + user.nama + ' SUDAH DITERIMA?\n\nTambahkan ' + tkNum(minutes) + ' token / menit?')) return;
+  const p = {requestId: tkNewId(), username:user.username, nominal, metode};
+  tkSavePending(p);
+  await tkRetryPending();
+}
+async function tkRetryPending() {
+  const p = tkPending(); if (!p) return;
+  const btn = $('#tkCommit'); if (btn) btn.disabled = true;
+  toast('tkMsg','Mengecek dan mengirim transaksi. Jangan tutup halaman...');
+  try {
+    const j = await api('tokenTopUp', p);
+    tkClearPending();
+    toast('tkMsg',(j.duplicate ? 'Transaksi sudah pernah tercatat, tidak digandakan.' : 'Top Up berhasil!') +
+      ' Sisa durasi: ' + j.sisaDurasi + '. ID: ' + (j.idTransaksi || p.requestId));
+    await tkGetMaster();
+    tkFilterChoice();
+    tkShowPending();
+    await tkLoadHistory();
+  } catch (e) {
+    // Bila koneksi putus ketika server sudah mencatat transaksi,
+    // ID transaksi tetap disimpan untuk pengulangan yang aman.
+    toast('tkMsg','Hasil transaksi belum pasti: ' + e.message + '. Gunakan tombol Periksa / ulangi transaksi yang sama.',1);
+    tkShowPending();
+  }
+}
+async function tkLoadHistory() {
+  const el = $('#tkHistory'); if (!el) return;
+  try {
+    const j = await api('tokenHistory');
+    el.innerHTML = '<table><tr><th>Waktu</th><th>Santri</th><th>Jenis</th><th>Rupiah</th><th>Durasi</th><th>Operator</th></tr>' +
+      (j.transactions || []).map(x => `<tr><td>${esc(x.waktu)}</td><td>${esc(x.username)}</td>
+      <td>${esc(x.jenis)}</td><td>${x.jenis==='TOPUP'?tkRp(x.rupiah):'-'}</td>
+      <td>${x.perubahanDetik>0?'+':''}${tkNum(x.perubahanDetik/60)} menit</td><td>${esc(x.operator)}</td></tr>`).join('') + '</table>';
+    if (!(j.transactions || []).length) el.innerHTML = '<p class="mut">Belum ada transaksi token.</p>';
+  } catch (e) { el.textContent = 'Riwayat gagal dimuat: ' + e.message; }
+}
+async function vTokenMaster() {
+  if (S.role !== 'pemilik') return;
+  $('#tc').innerHTML = `<div class="card"><h2>Master Token — Harga dan Durasi</h2>
+  <p class="mut">1 token = 1 menit. Perubahan harga berlaku untuk top up berikutnya, tidak mengubah saldo lama.</p>
+  <label>Harga paket (Rp)</label><input id="tmPrice" type="number" min="100" inputmode="numeric">
+  <label>Jumlah token / menit per paket</label><input id="tmMinutes" type="number" min="1" inputmode="numeric">
+  <p id="tmPreview" class="mut"></p><button onclick="tkSaveMasterUI()">Simpan Master Token</button>
+  <div id="tmStatus" class="msg"></div></div>
+  <div class="card"><h2>10 Santri dengan Token Terbanyak</h2><div class="wrap" id="tmTop">Memuat...</div></div>
+  <div class="card"><h2>Daftar Saldo Santri</h2><div class="row"><input id="tmSearch" placeholder="Cari nama santri" oninput="tkRenderMaster()">
+  <select id="tmSort" onchange="tkRenderMaster()"><option value="nama">Urut nama</option><option value="tertinggi">Token tertinggi</option><option value="terendah">Token terendah</option></select></div>
+  <div class="wrap" id="tmList">Memuat...</div></div>`;
+  try {
+    await tkGetMaster();
+    $('#tmPrice').value = TK.rate;
+    $('#tmMinutes').value = TK.minutes;
+    $('#tmPrice').addEventListener('input', tkMasterPreview);
+    $('#tmMinutes').addEventListener('input', tkMasterPreview);
+    tkMasterPreview(); tkRenderMaster();
+  } catch (e) { toast('tmStatus',e.message,1); }
+}
+function tkMasterPreview() {
+  const el=$('#tmPreview'); if (!el) return;
+  el.textContent = tkRp($('#tmPrice')?.value) + ' = ' +
+    tkNum($('#tmMinutes')?.value) + ' token / menit.';
+}
+async function tkSaveMasterUI() {
+  const hargaPaket = Number($('#tmPrice')?.value);
+  const menitPaket = Number($('#tmMinutes')?.value);
+  if (!Number.isSafeInteger(hargaPaket) || hargaPaket < 100 || hargaPaket > 10000000 ||
+      !Number.isSafeInteger(menitPaket) || menitPaket < 1 || menitPaket > 10080)
+    return toast('tmStatus','Harga dan durasi harus angka bulat positif.',1);
+  if (!confirm('Ubah tarif top up ke ' + tkRp(hargaPaket) + ' = ' + menitPaket + ' menit?')) return;
+  try {
+    await api('saveTokenMaster',{hargaPaket,menitPaket});
+    toast('tmStatus','Tarif tersimpan. Berlaku untuk top up berikutnya.');
+    await tkGetMaster(); tkRenderMaster();
+  } catch (e) { toast('tmStatus',e.message,1); }
+}
+function tkBalanceTable(list) {
+  return '<table><tr><th>Nama</th><th>Username</th><th>Token</th><th>Sisa Durasi</th></tr>' +
+    list.map(x => `<tr><td>${esc(x.nama)}</td><td>${esc(x.username)}</td><td>${tkNum(x.token)}</td><td>${esc(x.durasi)}</td></tr>`).join('') + '</table>' +
+    (list.length ? '' : '<p class="mut">Tidak ada santri yang cocok.</p>');
+}
+function tkRenderMaster() {
+  const list = $('#tmList'); if (!list) return;
+  const q = ($('#tmSearch')?.value || '').toLowerCase().trim();
+  const sort = $('#tmSort')?.value || 'nama';
+  const users = TK.members.filter(x => !q || x.nama.toLowerCase().includes(q) || x.username.toLowerCase().includes(q));
+  users.sort((a,b) => sort==='tertinggi' ? b.saldoDetik-a.saldoDetik || a.nama.localeCompare(b.nama) :
+    sort==='terendah' ? a.saldoDetik-b.saldoDetik || a.nama.localeCompare(b.nama) : a.nama.localeCompare(b.nama));
+  list.innerHTML = tkBalanceTable(users);
+  $('#tmTop').innerHTML = tkBalanceTable(TK.top10);
+}
+async function tkLoadSantriExtras() {
+  try { await tkGetMaster(); tkRenderSantriSaldo(); }
+  catch(e) { const el=$('#tkDaftarSantri'); if(el) el.textContent='Gagal memuat saldo: '+e.message; }
+}
+function tkRenderSantriSaldo() {
+  const list=$('#tkDaftarSantri'); if (!list) return;
+  const q=($('#tkCariSantri')?.value||'').trim().toLowerCase();
+  const sort=$('#tkUrutSantri')?.value||'nama';
+  const users=TK.members.filter(x=>!q || x.nama.toLowerCase().includes(q) || x.username.toLowerCase().includes(q));
+  users.sort((a,b)=>sort==='tertinggi'?b.saldoDetik-a.saldoDetik || a.nama.localeCompare(b.nama):
+    sort==='terendah'?a.saldoDetik-b.saldoDetik || a.nama.localeCompare(b.nama):a.nama.localeCompare(b.nama));
+  list.innerHTML=tkBalanceTable(users);
+  const top=$('#tkTopSantri'); if(top) top.innerHTML=tkBalanceTable(TK.top10);
+}
 
 function vStaff() {
   $('#tc').innerHTML = `<div class="card"><h2>Tambah akun pengawas (maks. 20)</h2>${userForm('s')}
@@ -559,7 +773,7 @@ async function vSet() {
   try { s = (await api('getSettings')).settings; dv = (await api('devices')).devices; } catch (e) { $('#tc').innerHTML = esc(e.message); return; }
   const opt = (o, v) => Object.keys(o).map(k => `<option ${k===v?'selected':''}>${k}</option>`).join('');
   const f = (id, l, v, t = 'text') => `<div><label>${l}</label><input id="f_${id}" type="${t}" value="${esc(v)}"></div>`;
-  $('#tc').innerHTML = `<div class="card"><h2>Tampilan</h2><div class="row">${f('appName','Nama aplikasi',s.appName)}${f('title','Judul aplikasi',s.title)}</div>
+  $('#tc').innerHTML = `<div class="card"><h2>Master Token</h2><p class="mut">Pengaturan harga rupiah ke durasi, saldo santri, Top 10, dan riwayat top up.</p><button type="button" onclick="showTab('Master Token')">Buka Master Token</button></div><div class="card"><h2>Tampilan</h2><div class="row">${f('appName','Nama aplikasi',s.appName)}${f('title','Judul aplikasi',s.title)}</div>
   <div class="row"><div><label>Tema</label><select id="f_theme">${opt(THEMES,s.theme)}</select></div><div><label>Jenis huruf</label><select id="f_font">${opt(FONTS,s.font)}</select></div></div></div>
   <div class="card"><h2>Server LiveKit</h2><p class="mut">Alamat wss://..., API Key, dan API Secret dari LiveKit. Secret kosong = tidak diubah${s.lkSet?' (sudah tersimpan)':' (belum diisi)'}.</p>
   <div class="row">${f('lkUrl','Alamat server (wss://...)',s.lkUrl)}${f('lkKey','API Key',s.lkKey)}${f('lkSecret','API Secret','','password')}</div>
@@ -571,6 +785,12 @@ async function vSet() {
   <div class="row"><input id="scNomor" placeholder="Nomor orang tua, contoh 08123456789"><input id="scKode" placeholder="Kode dari APK"></div>
   <button class="sec" onclick="scPair()">Pasangkan perangkat</button> <span id="scMsg" class="mut"></span>
   <p class="mut" style="margin-top:12px">Perangkat terpasang:</p><div id="scDevices" class="wrap">Memuat...</div></div>
+  <div class="card"><h2>Undangan Aktivasi SantriCall via WhatsApp</h2>
+  <p class="mut">Buat undangan aktivasi 60 menit, sekali pakai, untuk nomor orang tua yang benar. Pemasangan disetujui otomatis oleh server setelah tautan diklaim melalui APK versi aktivasi.</p>
+  <p class="mut"><b>Catatan:</b> Jangan kirim ke orang tua sebelum versi APK penerima tautan aktivasi selesai dipasang.</p>
+  <div class="row"><input id="scAktNomor" type="tel" inputmode="tel" autocomplete="tel" placeholder="Nomor WA orang tua, contoh 08123456789"><button class="sec" onclick="scMakeActivation()">Buat undangan WhatsApp</button></div>
+  <p id="scAktInfo" class="mut" role="status" aria-live="polite"></p>
+  <div id="scAktActions"></div></div>
   <div class="card"><h2>Waktu</h2><div class="row">${f('sessionMin','Menit per sesi',s.sessionMin,'number')}${f('dailyQuotaMin','Jatah menit per santri per hari',s.dailyQuotaMin,'number')}${f('warnSec','Peringatan (detik sebelum habis)',s.warnSec,'number')}</div></div>
   <div class="card"><h2>Perangkat & backup</h2><div class="row">${f('slotCount','Jumlah HP aktif (maks 30)',s.slotCount,'number')}${f('backupHour','Jam backup otomatis (0-23)',s.backupHour,'number')}${f('readyMin','Batas tunggu orang tua masuk (menit)',s.readyMin,'number')}</div>
 
@@ -591,6 +811,34 @@ async function saveSet() {
     applyCfg({appName:o.appName, title:o.title, theme:o.theme, font:o.font, warnSec:Number(o.warnSec), slotCount:Number(o.slotCount)});
     toast('st','Pengaturan tersimpan.');
   } catch (e) { toast('st', e.message, 1); }
+}
+async function scMakeActivation() {
+  const info = $('#scAktInfo'), box = $('#scAktActions');
+  if (!info || !box) return;
+  box.replaceChildren();
+  const nomor = ($('#scAktNomor')?.value || '').trim();
+  if (!nomor) { info.textContent = 'Isi nomor WhatsApp orang tua terlebih dahulu.'; return; }
+  info.textContent = 'Membuat undangan satu kali pakai...';
+  try {
+    const j = await api('createParentActivation', {nomor});
+    const wa = new URL(String(j.waUrl || ''));
+    if (wa.protocol !== 'https:' || wa.hostname !== 'wa.me' || !/^\/62\d{8,13}$/.test(wa.pathname) || !wa.searchParams.has('text')) {
+      throw new Error('Alamat WhatsApp dari server tidak valid.');
+    }
+    const link = document.createElement('a');
+    link.href = wa.href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.className = 'sc-wa-action';
+    link.textContent = 'Buka WhatsApp untuk mengirim undangan';
+    const note = document.createElement('p');
+    note.className = 'mut';
+    note.textContent = 'Tautan berlaku 60 menit dan hanya sekali pakai. Kirim hanya ke nomor orang tua yang tepat.';
+    box.replaceChildren(link, note);
+    info.textContent = 'Undangan berhasil dibuat untuk ' + String(j.nomor || nomor) + '. Tekan tautan WhatsApp di bawah dan kirim pesannya.';
+  } catch (e) {
+    info.textContent = 'Gagal membuat undangan: ' + e.message;
+  }
 }
 async function scPair() {
   const el=$('#scMsg');
