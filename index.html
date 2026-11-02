@@ -794,6 +794,19 @@ async function vSet() {
   <div class="card"><h2>Perangkat & backup</h2><p class="mut">Waktu video call otomatis memakai saldo token. Batas tunggu orang tua tetap berlaku sebelum panggilan tersambung.</p><div class="row">${f('warnSec','Peringatan saat sisa durasi (detik)',s.warnSec,'number')}${f('slotCount','Jumlah HP aktif (maks 30)',s.slotCount,'number')}${f('backupHour','Jam backup otomatis (0-23)',s.backupHour,'number')}${f('readyMin','Batas tunggu orang tua masuk (menit)',s.readyMin,'number')}</div>
 
   <button class="sec" style="margin-top:10px" onclick="backup()">Backup log sekarang</button> <span id="bk" class="mut"></span></div>
+  <div class="card" id="scdbCard"><h2>Backup Database Lengkap</h2>
+  <p class="mut">Cadangan seluruh data Billing termasuk Users, MasterToken, SaldoToken, MutasiToken, dan perangkat orang tua. Data asli tidak dikosongkan. Backup Log lama tetap terpisah.</p>
+  <div id="scdbStatus" class="mut" role="status" aria-live="polite">Memeriksa jadwal backup...</div>
+  <div class="row" style="margin-top:12px">
+    <button type="button" id="scdbNowBtn" onclick="scDbBackupUiNow()">Backup database sekarang</button>
+    <button class="sec" type="button" onclick="scDbBackupUiRefresh()">Perbarui status</button>
+    <button class="sec" type="button" id="scdbListBtn" onclick="scDbBackupUiList()">Lihat arsip backup</button>
+  </div>
+  <p class="mut" id="scdbMessage" role="status" aria-live="polite"></p>
+  <div id="scdbLinks" class="mut"></div>
+  <div id="scdbArchives" class="wrap" style="margin-top:10px"></div>
+  <div id="scdbInspect" class="wrap" style="margin-top:10px"></div>
+  <p class="mut" style="margin-top:12px">Backup otomatis sekitar 22.15 WIB. Hanya 30 cadangan otomatis terbaru yang dipertahankan; backup manual tidak dihapus otomatis. <b>Pemulihan database belum diaktifkan</b>; periksa arsip dahulu sebelum memulihkan data.</p></div>
   <div class="card"><h2>Kata sandi & PIN</h2><p class="mut">Kosongkan jika tidak ingin mengubah.</p>
   <div class="row">${f('resetPass','Kata sandi reset total durasi','','password')}${f('resetPin','PIN reset total durasi','','password')}</div>
   <label>Ganti kata sandi akun pemilik</label><div class="row"><input id="mypass" type="password" placeholder="Kata sandi baru"></div></div>
@@ -801,6 +814,7 @@ async function vSet() {
   <div class="card" style="margin-top:14px"><h2>Nama HP</h2><p class="mut">Ubah nama tampilan tiap HP (sesuai stiker).</p>
   <div class="wrap"><table>${dv.map(d => `<tr><td>${d.slot}</td><td><input id="dn${d.slot}" value="${esc(d.nama)}"></td><td style="white-space:nowrap"><button class="sec sm" onclick="saveDev(${d.slot})">Simpan</button></td></tr>`).join('')}</table></div></div>`;
   scLoadDevices();
+  scDbBackupUiRefresh();
 }
 async function saveSet() {
   const o = {}; ['appName','title','theme','font','warnSec','slotCount','backupHour','readyMin','lkUrl','lkKey','lkSecret','resetPass','resetPin','billingPublicUrl'].forEach(k => o[k] = $('#f_'+k).value);
@@ -959,6 +973,169 @@ async function scEditNumber(id) {
     await scLoadDevices();
     alert(j.msg || 'Nomor HP orang tua berhasil diperbarui.');
   } catch (e) { alert('Gagal mengubah nomor: ' + e.message); }
+}
+
+
+/* ================= BACKUP DATABASE LENGKAP =================
+ * Hanya tampilan pemilik. Server memverifikasi role pemilik lagi.
+ * Semua arsip tetap tersimpan privat di Drive; tidak ada fungsi restore otomatis.
+ */
+let SC_DB_UI_BUSY = false;
+
+function scDbUiMessage(message, error = false) {
+  const target = $('#scdbMessage');
+  if (!target) return;
+  target.textContent = String(message || '');
+  target.style.color = error ? 'var(--bad)' : 'var(--ok)';
+}
+
+function scDbUiTrustedUrl(raw, type) {
+  try {
+    const parsed = new URL(String(raw || ''));
+    if (parsed.protocol !== 'https:') return '';
+    if (type === 'folder') {
+      if (parsed.hostname !== 'drive.google.com' || !/^\/drive\/folders\/[A-Za-z0-9_-]+\/?$/.test(parsed.pathname)) return '';
+    } else {
+      if (!['docs.google.com','drive.google.com'].includes(parsed.hostname)) return '';
+      if (!/^[A-Za-z0-9_-]{10,}$/.test(parsed.pathname.split('/').filter(Boolean).find(x => /^[A-Za-z0-9_-]{20,}$/.test(x)) || '')) return '';
+    }
+    return parsed.href;
+  } catch (_) { return ''; }
+}
+
+function scDbUiMakeLink(raw, label, type = 'file') {
+  const safeUrl = scDbUiTrustedUrl(raw, type);
+  if (!safeUrl) return document.createTextNode('Tautan arsip tidak valid');
+  const a = document.createElement('a');
+  a.href = safeUrl;
+  a.textContent = label;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  return a;
+}
+
+async function scDbBackupUiRefresh() {
+  const target = $('#scdbStatus');
+  if (!target || S.role !== 'pemilik') return;
+  target.textContent = 'Memeriksa status backup database...';
+  try {
+    const result = await apiRaw('dbBackupStatus');
+    if (!$('#scdbStatus') || tab !== 'Pengaturan') return;
+    target.textContent =
+      'Backup otomatis: ' + (result.otomatisAktif ? 'AKTIF' : 'BELUM AKTIF') +
+      ' | Jadwal: ' + String(result.jadwal || '22.15 WIB') +
+      ' | Terakhir: ' + String(result.terakhir || '-') +
+      ' | Jumlah arsip: ' + String(result.totalArsip ?? 0);
+    const links = $('#scdbLinks');
+    if (links) {
+      links.replaceChildren(scDbUiMakeLink(result.folderUrl, 'Buka folder backup di Google Drive', 'folder'));
+    }
+    if (!result.otomatisAktif) {
+      scDbUiMessage('Peringatan: jadwal backup otomatis tidak terdeteksi. Periksa Trigger Apps Script.', true);
+    }
+  } catch (e) {
+    if ($('#scdbStatus')) target.textContent = 'Status backup gagal dimuat: ' + e.message;
+    scDbUiMessage('Pastikan Code.gs sudah di-deploy bersama SantriCallBackup.gs.', true);
+  }
+}
+
+async function scDbBackupUiNow() {
+  if (S.role !== 'pemilik' || SC_DB_UI_BUSY) return;
+  if (!confirm('Buat cadangan lengkap seluruh database SantriCall sekarang?\n\nData asli tidak akan dihapus atau dikosongkan.')) return;
+  const button = $('#scdbNowBtn');
+  SC_DB_UI_BUSY = true;
+  if (button) button.disabled = true;
+  scDbUiMessage('Membuat snapshot Google Spreadsheet. Jangan menekan tombol lagi...');
+  try {
+    const result = await apiRaw('dbBackupNow');
+    scDbUiMessage('SUKSES: ' + String(result.name || result.msg || 'Cadangan baru dibuat') + '. Seluruh sheet asli tetap tersedia.');
+    await scDbBackupUiRefresh();
+    // Reload daftar kalau sebelumnya pernah dibuka.
+    const archive = $('#scdbArchives');
+    if (archive && archive.dataset.loaded === '1') await scDbBackupUiList();
+  } catch (e) {
+    scDbUiMessage('Gagal membuat backup: ' + e.message, true);
+  } finally {
+    SC_DB_UI_BUSY = false;
+    if (button) button.disabled = false;
+  }
+}
+
+async function scDbBackupUiList() {
+  const target = $('#scdbArchives');
+  if (!target || S.role !== 'pemilik') return;
+  target.textContent = 'Memuat arsip backup...';
+  try {
+    const result = await apiRaw('dbBackupList');
+    if (!$('#scdbArchives') || tab !== 'Pengaturan') return;
+    const list = Array.isArray(result.items) ? result.items : [];
+    target.dataset.loaded = '1';
+    target.replaceChildren();
+    if (!list.length) {
+      target.textContent = 'Belum ada arsip. Klik Backup database sekarang.';
+      return;
+    }
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['Waktu WIB', 'Jenis', 'Arsip', 'Periksa'].forEach(label => {
+      const th = document.createElement('th'); th.textContent = label; headRow.appendChild(th);
+    });
+    head.appendChild(headRow); table.appendChild(head);
+    const body = document.createElement('tbody');
+    list.forEach(item => {
+      const id = String(item.id || '');
+      if (!/^[A-Za-z0-9_-]{10,}$/.test(id)) return;
+      const row = document.createElement('tr');
+      const time = document.createElement('td'); time.textContent = String(item.waktu || '-');
+      const kind = document.createElement('td'); kind.textContent = String(item.jenis || '-');
+      const file = document.createElement('td');
+      file.appendChild(scDbUiMakeLink(item.url, String(item.name || 'Buka cadangan')));
+      const action = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.className = 'sec sm'; btn.type = 'button'; btn.textContent = 'Periksa isi';
+      btn.addEventListener('click', () => scDbBackupUiInspect(id));
+      action.appendChild(btn);
+      row.append(time, kind, file, action); body.appendChild(row);
+    });
+    table.appendChild(body); target.appendChild(table);
+    scDbUiMessage('Daftar arsip dimuat. Klik nama untuk membuka salinannya di Drive, atau Periksa isi untuk membaca daftar sheet.');
+  } catch (e) {
+    if ($('#scdbArchives')) target.textContent = 'Gagal memuat arsip: ' + e.message;
+    scDbUiMessage('Gagal memuat daftar backup: ' + e.message, true);
+  }
+}
+
+async function scDbBackupUiInspect(id) {
+  const box = $('#scdbInspect');
+  if (!box || S.role !== 'pemilik') return;
+  box.textContent = 'Memeriksa keaslian dan isi cadangan...';
+  try {
+    const result = await apiRaw('dbBackupInspect', {id});
+    if (!$('#scdbInspect') || tab !== 'Pengaturan') return;
+    const heading = document.createElement('h2');
+    heading.textContent = 'Hasil pemeriksaan: ' + String(result.name || 'Cadangan');
+    const note = document.createElement('p');
+    note.className = 'mut';
+    note.textContent = String(result.msg || 'Cadangan diperiksa tanpa mengubah data aktif.');
+    const table = document.createElement('table');
+    const tr = document.createElement('tr');
+    ['Sheet', 'Jumlah baris data'].forEach(label => {
+      const th = document.createElement('th'); th.textContent = label; tr.appendChild(th);
+    });
+    table.appendChild(tr);
+    (result.sheets || []).forEach(sh => {
+      const row = document.createElement('tr');
+      const name = document.createElement('td'); name.textContent = String(sh.name || '');
+      const count = document.createElement('td'); count.textContent = String(sh.dataRows ?? 0);
+      row.append(name, count); table.appendChild(row);
+    });
+    box.replaceChildren(heading, note, table);
+    scDbUiMessage('Pemeriksaan selesai. Ini hanya pemeriksaan, bukan pemulihan data.');
+  } catch (e) {
+    if ($('#scdbInspect')) box.textContent = 'Gagal memeriksa arsip: ' + e.message;
+    scDbUiMessage('Pemeriksaan arsip gagal: ' + e.message, true);
+  }
 }
 
 async function saveDev(n) { try { await api('saveDevice', {slot:n, nama:$('#dn'+n).value}); alert('Tersimpan'); } catch (e) { alert(e.message); } }
