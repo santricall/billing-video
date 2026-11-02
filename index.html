@@ -299,7 +299,7 @@ function guestDone(m) { S.onDisc = null; lkLeave(); $('#app').innerHTML = `<div 
 function santriHome() {
   S.st = 'login';
   $('#app').innerHTML = `<div class="card center"><h2>Halo, ${esc(S.nama)}</h2>
-  <p class="mut">Jatah sesi ini: <b>${Math.floor(S.allowed/60)} menit ${S.allowed%60?S.allowed%60+' detik':''}</b></p>
+  <p class="mut">Saldo durasi tersedia: <b>${Math.floor(S.allowed/60)} menit ${S.allowed%60?S.allowed%60+' detik':''}</b></p>
   <label for="no">Nomor WhatsApp orang tua / keluarga</label>
   <input id="no" inputmode="tel" placeholder="contoh: 628123456789" value="${esc(S.ortu||'')}">
   <div class="err" id="e"></div>
@@ -347,7 +347,7 @@ function showReady() {
 function goOn(remaining) {
   ringStop();
   S.st = 'on'; S.endAt = Date.now() + remaining*1000; S.warned = false;
-  $('#info').innerHTML = `<div id="wb"></div><div class="mut" style="text-align:center">Sisa waktu</div><div class="big" id="cd">--:--</div>
+  $('#info').innerHTML = `<div id="wb"></div><div class="mut" style="text-align:center">Sisa Durasi Video Call</div><div class="big" id="cd">--:--</div>
   <button class="bad" style="width:100%" onclick="selesai('selesai oleh santri')">Akhiri panggilan</button>`;
   try { navigator.wakeLock && navigator.wakeLock.request('screen').then(w => T.wl = w); } catch (e) {}
   clearInterval(T.tick);
@@ -361,7 +361,7 @@ function goOn(remaining) {
   }, 500);
 }
 function warn(left) {
-  $('#wb').innerHTML = `<div class="warn" role="alert">Waktu tinggal ${left >= 50 ? 'sekitar 1 menit' : left+' detik'}. Segera akhiri pembicaraan.</div>`;
+  $('#wb').innerHTML = `<div class="warn" role="alert">Sisa durasi ${left >= 50 ? 'sekitar 1 menit' : left+' detik'}. Segera selesaikan pembicaraan.</div>`;
   try { navigator.vibrate && navigator.vibrate([400,200,400,200,400]); } catch (e) {}
   try {
     const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator();
@@ -381,7 +381,7 @@ function startBeat() {
 async function selesai(why) {
   S.onDisc = null;
   try { await api('end', {reason:why}); } catch (e) {}
-  S.token = null; toLogin(why === 'waktu habis' ? 'Waktu habis. Silakan login lagi.' : 'Sesi selesai.');
+  S.token = null; toLogin(why === 'waktu habis' ? 'Saldo durasi habis. Silakan top up sebelum menelepon kembali.' : 'Sesi selesai.');
 }
 /* saat timer berjalan, aplikasi disembunyikan = sesi mati */
 function kill(reason) {
@@ -773,7 +773,7 @@ async function vSet() {
   try { s = (await api('getSettings')).settings; dv = (await api('devices')).devices; } catch (e) { $('#tc').innerHTML = esc(e.message); return; }
   const opt = (o, v) => Object.keys(o).map(k => `<option ${k===v?'selected':''}>${k}</option>`).join('');
   const f = (id, l, v, t = 'text') => `<div><label>${l}</label><input id="f_${id}" type="${t}" value="${esc(v)}"></div>`;
-  $('#tc').innerHTML = `<div class="card"><h2>Master Token</h2><p class="mut">Pengaturan harga rupiah ke durasi, saldo santri, Top 10, dan riwayat top up.</p><button type="button" onclick="showTab('Master Token')">Buka Master Token</button></div><div class="card"><h2>Tampilan</h2><div class="row">${f('appName','Nama aplikasi',s.appName)}${f('title','Judul aplikasi',s.title)}</div>
+  $('#tc').innerHTML = `<div class="card"><h2>Master Token</h2><p class="mut">Pengaturan harga rupiah ke durasi, saldo santri, Top 10, dan riwayat top up. Durasi panggilan mengikuti saldo token santri secara otomatis.</p><button type="button" onclick="showTab('Master Token')">Buka Master Token</button></div><div class="card"><h2>Tampilan</h2><div class="row">${f('appName','Nama aplikasi',s.appName)}${f('title','Judul aplikasi',s.title)}</div>
   <div class="row"><div><label>Tema</label><select id="f_theme">${opt(THEMES,s.theme)}</select></div><div><label>Jenis huruf</label><select id="f_font">${opt(FONTS,s.font)}</select></div></div></div>
   <div class="card"><h2>Server LiveKit</h2><p class="mut">Alamat wss://..., API Key, dan API Secret dari LiveKit. Secret kosong = tidak diubah${s.lkSet?' (sudah tersimpan)':' (belum diisi)'}.</p>
   <div class="row">${f('lkUrl','Alamat server (wss://...)',s.lkUrl)}${f('lkKey','API Key',s.lkKey)}${f('lkSecret','API Secret','','password')}</div>
@@ -787,12 +787,10 @@ async function vSet() {
   <p class="mut" style="margin-top:12px">Perangkat terpasang:</p><div id="scDevices" class="wrap">Memuat...</div></div>
   <div class="card"><h2>Undangan Aktivasi SantriCall via WhatsApp</h2>
   <p class="mut">Buat undangan aktivasi 60 menit, sekali pakai, untuk nomor orang tua yang benar. Pemasangan disetujui otomatis oleh server setelah tautan diklaim melalui APK versi aktivasi.</p>
-  <p class="mut"><b>Catatan:</b> Jangan kirim ke orang tua sebelum versi APK penerima tautan aktivasi selesai dipasang.</p>
   <div class="row"><input id="scAktNomor" type="tel" inputmode="tel" autocomplete="tel" placeholder="Nomor WA orang tua, contoh 08123456789"><button class="sec" onclick="scMakeActivation()">Buat undangan WhatsApp</button></div>
   <p id="scAktInfo" class="mut" role="status" aria-live="polite"></p>
   <div id="scAktActions"></div></div>
-  <div class="card"><h2>Waktu</h2><div class="row">${f('sessionMin','Menit per sesi',s.sessionMin,'number')}${f('dailyQuotaMin','Jatah menit per santri per hari',s.dailyQuotaMin,'number')}${f('warnSec','Peringatan (detik sebelum habis)',s.warnSec,'number')}</div></div>
-  <div class="card"><h2>Perangkat & backup</h2><div class="row">${f('slotCount','Jumlah HP aktif (maks 30)',s.slotCount,'number')}${f('backupHour','Jam backup otomatis (0-23)',s.backupHour,'number')}${f('readyMin','Batas tunggu orang tua masuk (menit)',s.readyMin,'number')}</div>
+  <div class="card"><h2>Perangkat & backup</h2><p class="mut">Waktu video call otomatis memakai saldo token. Batas tunggu orang tua tetap berlaku sebelum panggilan tersambung.</p><div class="row">${f('warnSec','Peringatan saat sisa durasi (detik)',s.warnSec,'number')}${f('slotCount','Jumlah HP aktif (maks 30)',s.slotCount,'number')}${f('backupHour','Jam backup otomatis (0-23)',s.backupHour,'number')}${f('readyMin','Batas tunggu orang tua masuk (menit)',s.readyMin,'number')}</div>
 
   <button class="sec" style="margin-top:10px" onclick="backup()">Backup log sekarang</button> <span id="bk" class="mut"></span></div>
   <div class="card"><h2>Kata sandi & PIN</h2><p class="mut">Kosongkan jika tidak ingin mengubah.</p>
@@ -804,7 +802,7 @@ async function vSet() {
   scLoadDevices();
 }
 async function saveSet() {
-  const o = {}; ['appName','title','theme','font','sessionMin','dailyQuotaMin','warnSec','slotCount','backupHour','readyMin','lkUrl','lkKey','lkSecret','resetPass','resetPin','billingPublicUrl'].forEach(k => o[k] = $('#f_'+k).value);
+  const o = {}; ['appName','title','theme','font','warnSec','slotCount','backupHour','readyMin','lkUrl','lkKey','lkSecret','resetPass','resetPin','billingPublicUrl'].forEach(k => o[k] = $('#f_'+k).value);
   try {
     await api('saveSettings', {settings:o});
     const mp = $('#mypass').value; if (mp) await api('setPass', {username:S.user, password:mp});
