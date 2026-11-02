@@ -781,10 +781,11 @@ async function vSet() {
   <div class="card"><h2>SantriCall Notifier</h2><p class="mut">Isi alamat halaman publik Billing yang dipakai orang tua, contoh https://NAMA.github.io/billing-video/index.html (tanpa ?r=).</p>
   ${f('billingPublicUrl','URL publik halaman Billing',s.billingPublicUrl||'')}
   <p class="mut">Simpan lewat tombol Simpan pengaturan di bawah. Kunci Firebase hanya di Apps Script Properties, bukan di halaman ini.</p></div>
-  <div class="card"><h2>Pasangkan APK ke nomor orang tua</h2><p class="mut">Orang tua tekan Daftarkan HP pada APK; kode 10 karakter berlaku 10 menit. Masukkan kode dan nomor orang tua lalu klik Pasangkan.</p>
+  <div class="card"><h2>Perangkat Orang Tua</h2><p class="mut">Perangkat yang sudah diaktivasi lewat tautan WhatsApp tercatat otomatis. Gunakan Aktifkan Kembali, Edit Nomor, atau Nonaktifkan untuk pengelolaan perangkat. Untuk APK lama, pemasangan kode manual masih tersedia di bawah.</p><details style="margin:12px 0"><summary style="cursor:pointer;font-weight:600">Pasangkan APK lama secara manual (opsional)</summary><p class="mut">Masukkan kode 10 karakter dari APK versi lama dan nomor WA orang tua.</p>
   <div class="row"><input id="scNomor" placeholder="Nomor orang tua, contoh 08123456789"><input id="scKode" placeholder="Kode dari APK"></div>
-  <button class="sec" onclick="scPair()">Pasangkan perangkat</button> <span id="scMsg" class="mut"></span>
-  <p class="mut" style="margin-top:12px">Perangkat terpasang:</p><div id="scDevices" class="wrap">Memuat...</div></div>
+  <button class="sec" onclick="scPair()">Pasangkan perangkat</button> <span id="scMsg" class="mut"></span></details>
+  <div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:4px 0">Daftar Perangkat Orang Tua</h2><button class="sec sm" type="button" onclick="scLoadDevices()">Muat ulang</button></div>
+  <div id="scDevices" class="wrap" aria-live="polite">Memuat...</div></div>
   <div class="card"><h2>Undangan Aktivasi SantriCall via WhatsApp</h2>
   <p class="mut">Buat undangan aktivasi 60 menit, sekali pakai, untuk nomor orang tua yang benar. Pemasangan disetujui otomatis oleh server setelah tautan diklaim melalui APK versi aktivasi.</p>
   <div class="row"><input id="scAktNomor" type="tel" inputmode="tel" autocomplete="tel" placeholder="Nomor WA orang tua, contoh 08123456789"><button class="sec" onclick="scMakeActivation()">Buat undangan WhatsApp</button></div>
@@ -847,24 +848,119 @@ async function scPair() {
   } catch(e) { if(el) el.textContent=e.message; }
 }
 async function scLoadDevices() {
-  const el=$('#scDevices'); if(!el) return;
+  const el = $('#scDevices');
+  if (!el) return;
+  el.textContent = 'Memuat daftar HP orang tua...';
   try {
-    const j=await api('listParentDevices');
-    if(!j.devices.length) {el.textContent='Belum ada HP yang dipasangkan.';return;}
-    el.innerHTML='<table><tr><th>Nomor</th><th>Terakhir update</th><th>Aksi</th></tr>' + j.devices.map(d=>
-      `<tr><td>${esc(d.nomor)} ${d.aktif?'':'(nonaktif)'}</td><td>${esc(d.updated)}</td><td>${d.aktif?`<button class="sm sec" onclick="scTest('${esc(d.installId)}')">Tes notifikasi</button> <button class="sm bad" onclick="scUnpair('${esc(d.installId)}')">Nonaktifkan</button>`:''}</td></tr>`
-    ).join('')+'</table>';
-  } catch(e) {el.textContent='Gagal: '+e.message;}
+    const j = await api('listParentDevices');
+    const devices = j.devices || [];
+    if (!devices.length) {
+      el.textContent = 'Belum ada perangkat orang tua yang dipasangkan.';
+      return;
+    }
+    // Teks dari database di-escape sebelum dimasukkan ke HTML.
+    // Install ID divalidasi, agar tidak menjadi kode dari data luar.
+    const validId = id => /^[0-9a-f-]{36}$/i.test(String(id));
+    el.innerHTML = '<table><thead><tr><th>Nomor WA</th><th>Status</th><th>Terakhir update</th><th>Aksi pemilik</th></tr></thead><tbody>' +
+      devices.map(d => {
+        const id = String(d.installId || '');
+        const safeId = esc(id);
+        const active = !!d.aktif;
+        const action = !validId(id) ? '<span class="mut">ID perangkat tidak valid</span>' :
+          (active ?
+            `<button class="sm sec" type="button" onclick="scTest('${safeId}')">Tes Notifikasi</button> ` +
+            `<button class="sm bad" type="button" onclick="scUnpair('${safeId}')">Nonaktifkan</button> ` :
+            `<button class="sm" type="button" onclick="scReactivate('${safeId}')">Aktifkan Kembali</button> `) +
+          `<button class="sm sec" type="button" onclick="scEditNumber('${safeId}')">Edit Nomor</button>`;
+        return `<tr><td>${esc(d.nomor)}</td><td><b style="color:${active ? 'var(--ok)' : 'var(--bad)'}">${active ? 'Aktif' : 'Nonaktif'}</b></td>` +
+          `<td>${esc(d.updated)}</td><td style="min-width:210px;white-space:normal">${action}</td></tr>`;
+      }).join('') + '</tbody></table>';
+    // Data terbaru juga disimpan hanya di memori saat sesi pemilik aktif.
+    SC_PARENT_UI_DEVICES = devices.map(d => ({
+      installId: String(d.installId || ''),
+      nomor: String(d.nomor || ''),
+      aktif: !!d.aktif
+    }));
+  } catch (e) {
+    el.textContent = 'Gagal memuat perangkat: ' + e.message;
+  }
 }
+
+let SC_PARENT_UI_DEVICES = [];
+
 async function scTest(id) {
-  try { const j=await api('testParentDevice',{installId:id}); alert(j.msg); }
-  catch(e) { alert('Tes gagal: '+e.message); }
+  try {
+    const j = await api('testParentDevice', {installId:id});
+    alert(j.msg);
+  } catch(e) { alert('Tes gagal: ' + e.message); }
 }
+
 async function scUnpair(id) {
-  if(!confirm('Nonaktifkan penerimaan notifikasi pada HP ini?')) return;
-  try {await api('unpairParentDevice',{installId:id}); scLoadDevices();}
-  catch(e) {alert(e.message);}
+  const device = SC_PARENT_UI_DEVICES.find(x => x.installId === id);
+  if (!device || !device.aktif) {
+    alert('Daftar perangkat telah berubah. Muat ulang terlebih dahulu.');
+    return;
+  }
+  if (!confirm('Nonaktifkan penerimaan panggilan untuk nomor ' + device.nomor + '?\n\nHP tidak akan menerima undangan sampai diaktifkan kembali.')) return;
+  try {
+    await api('unpairParentDevice', {installId:id});
+    await scLoadDevices();
+  } catch(e) {alert('Gagal menonaktifkan: ' + e.message);}
 }
+
+async function scReactivate(id) {
+  const device = SC_PARENT_UI_DEVICES.find(x => x.installId === id);
+  if (!device || device.aktif) {
+    alert('Status perangkat telah berubah. Muat ulang terlebih dahulu.');
+    return;
+  }
+  if (!confirm('Aktifkan kembali SantriCall untuk nomor ' + device.nomor + '?\n\nPastikan HP ini masih dimiliki orang tua yang benar.')) return;
+  try {
+    const j = await api('reactivateParentDevice', {installId:id});
+    await scLoadDevices();
+    alert(j.msg || 'Perangkat berhasil diaktifkan kembali.');
+  } catch(e) { alert('Aktivasi kembali gagal: ' + e.message); }
+}
+
+async function scEditNumber(id) {
+  const device = SC_PARENT_UI_DEVICES.find(x => x.installId === id);
+  if (!device) {
+    alert('Perangkat tidak ditemukan. Muat ulang dahulu.');
+    return;
+  }
+  const nomorBaru = prompt(
+    'EDIT NOMOR WHATSAPP ORANG TUA\n' +
+    'Nomor lama: ' + device.nomor + '\n\n' +
+    'Masukkan nomor baru pada HP yang SAMA:',
+    device.nomor
+  );
+  if (nomorBaru === null) return;
+  const clean = nomorBaru.trim();
+  if (!/^(?:0|62|\+62|8)\d{8,13}$/.test(clean)) {
+    alert('Nomor baru tidak valid. Contoh: 081234567890 atau 6281234567890.');
+    return;
+  }
+  if (clean.replace(/\D/g,'') === device.nomor.replace(/\D/g,'')) {
+    alert('Nomor belum berubah.');
+    return;
+  }
+  if (!confirm(
+    'Konfirmasi perubahan tujuan panggilan:\n\n' +
+    'DARI: ' + device.nomor + '\nKE: ' + clean + '\n\n' +
+    'Pastikan nomor baru benar dan merupakan milik orang tua yang berwenang. Lanjutkan?'
+  )) return;
+  try {
+    const j = await api('editParentDevice', {
+      installId: id,
+      nomorLama: device.nomor,
+      nomor: clean,
+      konfirmasi: true
+    });
+    await scLoadDevices();
+    alert(j.msg || 'Nomor HP orang tua berhasil diperbarui.');
+  } catch (e) { alert('Gagal mengubah nomor: ' + e.message); }
+}
+
 async function saveDev(n) { try { await api('saveDevice', {slot:n, nama:$('#dn'+n).value}); alert('Tersimpan'); } catch (e) { alert(e.message); } }
 async function testLk() { toast('tm','Menguji...'); try { const j = await api('testLk'); toast('tm', j.msg); } catch (e) { toast('tm', e.message, 1); } }
 async function backup() { try { const j = await api('backupNow'); toast('bk', j.msg); } catch (e) { toast('bk', e.message, 1); } }
