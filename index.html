@@ -818,6 +818,18 @@ async function vSet() {
   <div id="scdbArchives" class="wrap" style="margin-top:10px"></div>
   <div id="scdbInspect" class="wrap" style="margin-top:10px"></div>
   <p class="mut" style="margin-top:12px">Backup otomatis sekitar 22.15 WIB. Hanya 30 cadangan otomatis terbaru yang dipertahankan; backup manual tidak dihapus otomatis. <b>Pemulihan ke database aktif belum diaktifkan</b>; hanya pemeriksaan dan salinan uji yang tersedia.</p></div>
+  <div class="card" id="screscueCard"><h2>Backup Penyelamatan Sebelum Pemulihan</h2>
+  <p class="mut">Cadangan khusus seluruh database sebelum pemulihan. <b>Wajib Mode Pemeliharaan aktif</b>, seluruh slot <b>idle</b>, dan tidak ada transaksi berjalan. Salinan diverifikasi sebelum dinyatakan berhasil. <b>Tidak ada data Billing aktif yang ditimpa.</b></p>
+  <div id="screscueStatus" class="mut" role="status" aria-live="polite">Memeriksa kesiapan backup penyelamatan...</div>
+  <p id="screscueDetails" class="mut"></p>
+  <div class="row" style="margin-top:12px">
+    <button type="button" id="screscueCheckBtn" class="sec" onclick="scRsUiCheck()">Periksa Kesiapan</button>
+    <button type="button" id="screscueCreateBtn" disabled onclick="scRsUiCreate()">Buat Backup Penyelamatan</button>
+    <button type="button" id="screscueVerifyBtn" class="sec" onclick="scRsUiVerify()">Verifikasi Arsip Terakhir</button>
+  </div>
+  <p id="screscueMessage" class="mut" role="status" aria-live="polite"></p>
+  <div id="screscueResult" class="wrap" style="margin-top:10px"></div>
+  <p class="mut" style="margin-top:12px"><b>Catatan:</b> Setelah membuat cadangan dan selesai melakukan pekerjaan pemeliharaan, nonaktifkan Mode Pemeliharaan secara manual. Modul ini tidak menjalankan pemulihan database produksi.</p></div>
   <div class="card" id="scrcCard"><h2>Pemulihan Database — Mode Aman</h2>
   <p class="mut">Pilih salah satu arsip database untuk membandingkan jumlah baris, memeriksa catatan token, dan menyiapkan <b>salinan uji</b> di Google Drive. <b>Fitur ini tidak mengembalikan atau menimpa database Billing aktif.</b></p>
   <label for="scrcBackup">Arsip yang ingin diperiksa</label>
@@ -838,7 +850,7 @@ async function vSet() {
   <div class="card" style="margin-top:14px"><h2>Nama HP</h2><p class="mut">Ubah nama tampilan tiap HP (sesuai stiker).</p>
   <div class="wrap"><table>${dv.map(d => `<tr><td>${d.slot}</td><td><input id="dn${d.slot}" value="${esc(d.nama)}"></td><td style="white-space:nowrap"><button class="sec sm" onclick="saveDev(${d.slot})">Simpan</button></td></tr>`).join('')}</table></div></div>`;
   scLoadDevices();
-  scMtUiRefresh();
+  scMtUiRefresh().finally(() => scRsUiCheck());
   scDbBackupUiRefresh();
   scRcUiLoadArchives();
 }
@@ -1066,6 +1078,8 @@ function scMtUiButtons() {
 function scMtUiRender(st) {
   if (!$('#scmtCard')) return;
   SC_MT_UI_STATE = st;
+  // Status penyelamatan tidak boleh digunakan setelah perubahan mode.
+  if (typeof scRsUiInvalidate === 'function') scRsUiInvalidate();
   const status = $('#scmtStatus'), details = $('#scmtDetails');
   status.className = st.aktif ? 'warn' : 'msg';
   status.textContent = st.aktif ?
@@ -1144,6 +1158,172 @@ async function scMtUiToggle(enable) {
 }
 function scMtUiOn() { return scMtUiToggle(true); }
 function scMtUiOff() { return scMtUiToggle(false); }
+
+/* ========== BACKUP PENYELAMATAN: 3 API PEMILIK ============
+ * dbRescueCheck, dbRescueCreate, dbRescueVerifyLast.
+ * Ini hanya menyalin dan memeriksa cadangan; tidak menimpa database aktif.
+ * Tombol create memerlukan check terbaru dan server tetap memeriksa ulang.
+ */
+let SC_RS_UI_BUSY = false;
+let SC_RS_UI_READY = false;
+let SC_RS_UI_LAST_CHECK_AT = 0;
+const SC_RS_UI_CHECK_MAX_AGE = 60000;
+
+function scRsUiMessage(message, error = false) {
+  const el = $('#screscueMessage');
+  if (!el) return;
+  el.textContent = String(message || '');
+  el.className = error ? 'err' : 'mut';
+}
+function scRsUiInvalidate() {
+  SC_RS_UI_READY = false;
+  SC_RS_UI_LAST_CHECK_AT = 0;
+  const status = $('#screscueStatus');
+  const details = $('#screscueDetails');
+  if (status) {
+    status.className = 'mut';
+    status.textContent = 'Status kesiapan perlu diperiksa ulang. Klik Periksa Kesiapan.';
+  }
+  if (details) details.textContent = '';
+  scRsUiButtons();
+}
+function scRsUiButtons() {
+  const check = $('#screscueCheckBtn');
+  const create = $('#screscueCreateBtn');
+  const verify = $('#screscueVerifyBtn');
+  if (!check || !create || !verify) return;
+  check.disabled = SC_RS_UI_BUSY;
+  create.disabled = SC_RS_UI_BUSY || !SC_RS_UI_READY ||
+    (Date.now() - SC_RS_UI_LAST_CHECK_AT > SC_RS_UI_CHECK_MAX_AGE);
+  verify.disabled = SC_RS_UI_BUSY;
+}
+function scRsUiSetBusy(busy) {
+  SC_RS_UI_BUSY = !!busy;
+  scRsUiButtons();
+}
+function scRsUiResult(title, detail, url) {
+  const target = $('#screscueResult');
+  if (!target) return;
+  target.replaceChildren();
+  const heading = document.createElement('strong');
+  heading.textContent = String(title || '');
+  target.appendChild(heading);
+  const p = document.createElement('p');
+  p.className = 'mut';
+  p.textContent = String(detail || '');
+  target.appendChild(p);
+  if (url) {
+    const link = scDbUiMakeLink(url, 'Buka arsip penyelamatan di Google Drive');
+    target.appendChild(link);
+  }
+}
+function scRsUiRenderCheck(check) {
+  const status = $('#screscueStatus');
+  const details = $('#screscueDetails');
+  if (!status || !details) return;
+  const safe = check.siap === true &&
+    check.modePemeliharaan === true &&
+    Number(check.slotBelumIdle) === 0 &&
+    Number(check.transaksiBerjalan) === 0;
+  SC_RS_UI_READY = safe;
+  SC_RS_UI_LAST_CHECK_AT = Date.now();
+  status.className = safe ? 'msg' : 'warn';
+  status.textContent = safe ?
+    'SIAP — backup penyelamatan dapat dibuat.' :
+    'BELUM SIAP — periksa kondisi pemeliharaan dan aktivitas Billing.';
+  details.textContent = [
+    'Mode Pemeliharaan: ' + (check.modePemeliharaan === true ? 'AKTIF' : 'NONAKTIF'),
+    'Slot belum idle: ' + String(check.slotBelumIdle ?? '-'),
+    'Transaksi berjalan: ' + String(check.transaksiBerjalan ?? '-'),
+    'Jumlah sheet: ' + String(check.jumlahSheet ?? '-')
+  ].join(' | ');
+  scRsUiMessage(String(check.pesan || (safe ? 'Siap.' : 'Belum siap.')), !safe);
+  scRsUiButtons();
+}
+async function scRsUiCheck() {
+  if (S.role !== 'pemilik' || tab !== 'Pengaturan' || !$('#screscueCard') || SC_RS_UI_BUSY) return;
+  scRsUiInvalidate();
+  scRsUiSetBusy(true);
+  const status = $('#screscueStatus');
+  status.className = 'mut';
+  status.textContent = 'Memeriksa Mode Pemeliharaan, slot, dan transaksi di server...';
+  try {
+    const result = await apiRaw('dbRescueCheck');
+    if (tab !== 'Pengaturan' || !$('#screscueCard')) return;
+    scRsUiRenderCheck(result);
+  } catch (error) {
+    scRsUiInvalidate();
+    if (tab === 'Pengaturan' && $('#screscueStatus')) {
+      status.className = 'err';
+      status.textContent = 'Kesiapan belum dapat diverifikasi.';
+      $('#screscueDetails').textContent = '';
+      scRsUiMessage('Gagal memeriksa kesiapan: ' + error.message, true);
+    }
+  } finally {
+    scRsUiSetBusy(false);
+  }
+}
+async function scRsUiCreate() {
+  if (S.role !== 'pemilik' || tab !== 'Pengaturan' || !$('#screscueCard') || SC_RS_UI_BUSY || !SC_RS_UI_READY) return;
+  if (Date.now() - SC_RS_UI_LAST_CHECK_AT > SC_RS_UI_CHECK_MAX_AGE) {
+    scRsUiInvalidate();
+    scRsUiMessage('Pemeriksaan kesiapan kedaluwarsa. Klik Periksa Kesiapan lagi.', true);
+    return;
+  }
+  scRsUiInvalidate();
+  scRsUiSetBusy(true);
+  scRsUiMessage('Memeriksa ulang kesiapan sebelum membuat salinan...');
+  try {
+    const check = await apiRaw('dbRescueCheck');
+    if (tab !== 'Pengaturan' || !$('#screscueCard')) return;
+    scRsUiRenderCheck(check);
+    if (!SC_RS_UI_READY) {
+      scRsUiMessage('Backup dibatalkan: ' + String(check.pesan || 'Mode atau transaksi belum aman.'), true);
+      return;
+    }
+    if (!confirm('Buat BACKUP PENYELAMATAN sekarang?\n\nSeluruh database akan disalin ke Google Drive dan diverifikasi. Database aktif tidak diubah. Mode Pemeliharaan tetap AKTIF setelah selesai.')) return;
+    scRsUiMessage('Membuat dan memverifikasi backup penyelamatan. Mohon jangan menutup halaman ini selama permintaan berlangsung.');
+    const result = await apiRaw('dbRescueCreate');
+    if (tab !== 'Pengaturan' || !$('#screscueCard')) return;
+    if (result.berhasil !== true) throw new Error(String(result.pesan || 'Server tidak menyatakan backup berhasil'));
+    scRsUiResult(result.status || 'BACKUP PENYELAMATAN SUKSES',
+      'Arsip: ' + String(result.namaFile || '-') +
+      ' | Waktu: ' + String(result.waktu || '-') +
+      ' | Sheet: ' + String(result.jumlahSheet ?? '-') +
+      ' | Sel diperiksa: ' + String(result.jumlahSelDiperiksa ?? '-') +
+      ' | Database asli tidak diubah.', result.url);
+    scRsUiMessage('Backup penyelamatan berhasil dibuat dan lolos verifikasi. Mode Pemeliharaan masih aktif.');
+    // Segarkan daftar arsip dan status, tetapi jangan otomatis menonaktifkan pemeliharaan.
+    scDbBackupUiRefresh();
+    scRcUiLoadArchives();
+  } catch (error) {
+    scRsUiMessage('Backup penyelamatan gagal atau belum pasti: ' + error.message +
+      '. Periksa daftar arsip / verifikasi terakhir sebelum mengulang.', true);
+  } finally {
+    scRsUiInvalidate();
+    scRsUiSetBusy(false);
+  }
+}
+async function scRsUiVerify() {
+  if (S.role !== 'pemilik' || tab !== 'Pengaturan' || !$('#screscueCard') || SC_RS_UI_BUSY) return;
+  scRsUiSetBusy(true);
+  scRsUiMessage('Memeriksa integritas arsip penyelamatan terakhir...');
+  try {
+    const result = await apiRaw('dbRescueVerifyLast');
+    if (tab !== 'Pengaturan' || !$('#screscueCard')) return;
+    if (result.berhasil !== true) throw new Error(String(result.pesan || 'Verifikasi tidak dikonfirmasi oleh server'));
+    scRsUiResult(result.status || 'ARSIP PENYELAMATAN VALID',
+      'Arsip: ' + String(result.namaFile || '-') +
+      ' | Sheet: ' + String(result.jumlahSheet ?? '-') +
+      ' | Sel diperiksa: ' + String(result.jumlahSelDiperiksa ?? '-') +
+      ' | ' + String(result.pesan || ''), result.url);
+    scRsUiMessage('Arsip penyelamatan terakhir valid. Database aktif tidak diubah.');
+  } catch (error) {
+    scRsUiMessage('Verifikasi gagal: ' + error.message, true);
+  } finally {
+    scRsUiSetBusy(false);
+  }
+}
 
 async function scDbBackupUiRefresh() {
   const target = $('#scdbStatus');
