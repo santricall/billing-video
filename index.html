@@ -806,7 +806,20 @@ async function vSet() {
   <div id="scdbLinks" class="mut"></div>
   <div id="scdbArchives" class="wrap" style="margin-top:10px"></div>
   <div id="scdbInspect" class="wrap" style="margin-top:10px"></div>
-  <p class="mut" style="margin-top:12px">Backup otomatis sekitar 22.15 WIB. Hanya 30 cadangan otomatis terbaru yang dipertahankan; backup manual tidak dihapus otomatis. <b>Pemulihan database belum diaktifkan</b>; periksa arsip dahulu sebelum memulihkan data.</p></div>
+  <p class="mut" style="margin-top:12px">Backup otomatis sekitar 22.15 WIB. Hanya 30 cadangan otomatis terbaru yang dipertahankan; backup manual tidak dihapus otomatis. <b>Pemulihan ke database aktif belum diaktifkan</b>; hanya pemeriksaan dan salinan uji yang tersedia.</p></div>
+  <div class="card" id="scrcCard"><h2>Pemulihan Database — Mode Aman</h2>
+  <p class="mut">Pilih salah satu arsip database untuk membandingkan jumlah baris, memeriksa catatan token, dan menyiapkan <b>salinan uji</b> di Google Drive. <b>Fitur ini tidak mengembalikan atau menimpa database Billing aktif.</b></p>
+  <label for="scrcBackup">Arsip yang ingin diperiksa</label>
+  <select id="scrcBackup" onchange="scRcUiSelectionChanged()"><option value="">Memuat arsip backup...</option></select>
+  <div class="row" style="margin-top:10px">
+    <button type="button" class="sec" id="scrcReloadBtn" onclick="scRcUiLoadArchives()">Perbarui daftar arsip</button>
+    <button type="button" id="scrcPreviewBtn" disabled onclick="scRcUiPreview()">Periksa sebelum pemulihan</button>
+    <button type="button" class="sec" id="scrcPrepareBtn" disabled onclick="scRcUiPrepare()">Siapkan salinan uji</button>
+  </div>
+  <p class="mut" id="scrcMessage" role="status" aria-live="polite"></p>
+  <div id="scrcPreview" class="wrap" style="margin-top:10px"></div>
+  <div id="scrcPrepared" style="margin-top:10px"></div>
+  <p class="mut" style="margin-top:12px"><b>Perlindungan:</b> Tidak ada tombol pemulihan langsung ke database aktif. Salinan uji dibuat di Drive secara terpisah; pemeriksaan ini tidak menjamin seluruh transaksi telah direkonsiliasi. Jangan mengganti spreadsheet aktif dengan salinan lama.</p></div>
   <div class="card"><h2>Kata sandi & PIN</h2><p class="mut">Kosongkan jika tidak ingin mengubah.</p>
   <div class="row">${f('resetPass','Kata sandi reset total durasi','','password')}${f('resetPin','PIN reset total durasi','','password')}</div>
   <label>Ganti kata sandi akun pemilik</label><div class="row"><input id="mypass" type="password" placeholder="Kata sandi baru"></div></div>
@@ -815,6 +828,7 @@ async function vSet() {
   <div class="wrap"><table>${dv.map(d => `<tr><td>${d.slot}</td><td><input id="dn${d.slot}" value="${esc(d.nama)}"></td><td style="white-space:nowrap"><button class="sec sm" onclick="saveDev(${d.slot})">Simpan</button></td></tr>`).join('')}</table></div></div>`;
   scLoadDevices();
   scDbBackupUiRefresh();
+  scRcUiLoadArchives();
 }
 async function saveSet() {
   const o = {}; ['appName','title','theme','font','warnSec','slotCount','backupHour','readyMin','lkUrl','lkKey','lkSecret','resetPass','resetPin','billingPublicUrl'].forEach(k => o[k] = $('#f_'+k).value);
@@ -1053,6 +1067,7 @@ async function scDbBackupUiNow() {
     // Reload daftar kalau sebelumnya pernah dibuka.
     const archive = $('#scdbArchives');
     if (archive && archive.dataset.loaded === '1') await scDbBackupUiList();
+    if ($('#scrcBackup')) await scRcUiLoadArchives();
   } catch (e) {
     scDbUiMessage('Gagal membuat backup: ' + e.message, true);
   } finally {
@@ -1135,6 +1150,187 @@ async function scDbBackupUiInspect(id) {
   } catch (e) {
     if ($('#scdbInspect')) box.textContent = 'Gagal memeriksa arsip: ' + e.message;
     scDbUiMessage('Pemeriksaan arsip gagal: ' + e.message, true);
+  }
+}
+
+/* ================= PEMULIHAN DATABASE - MODE AMAN =================
+ * Hanya untuk pemilik, dibatasi ulang oleh needOwner(s) di server.
+ * Tidak ada endpoint yang menimpa spreadsheet aktif.
+ */
+let SC_RC_UI_BUSY = false;
+let SC_RC_UI_PREVIEW_ID = '';
+
+function scRcUiMessage(message, error = false) {
+  const target = $('#scrcMessage');
+  if (!target) return;
+  target.textContent = String(message || '');
+  target.style.color = error ? 'var(--bad)' : 'var(--mut)';
+}
+
+function scRcUiSetBusy(busy) {
+  SC_RC_UI_BUSY = !!busy;
+  const sel = $('#scrcBackup');
+  const reload = $('#scrcReloadBtn');
+  const preview = $('#scrcPreviewBtn');
+  const prepare = $('#scrcPrepareBtn');
+  if (sel) sel.disabled = busy;
+  if (reload) reload.disabled = busy;
+  const valid = sel && /^[A-Za-z0-9_-]{10,}$/.test(sel.value);
+  if (preview) preview.disabled = busy || !valid;
+  if (prepare) prepare.disabled = busy || !valid || SC_RC_UI_PREVIEW_ID !== sel.value;
+}
+
+function scRcUiSelectionChanged() {
+  SC_RC_UI_PREVIEW_ID = '';
+  const box = $('#scrcPreview');
+  const prepared = $('#scrcPrepared');
+  if (box) box.replaceChildren();
+  if (prepared) prepared.replaceChildren();
+  scRcUiMessage('Pilih Periksa sebelum pemulihan untuk melihat kondisi arsip.');
+  scRcUiSetBusy(SC_RC_UI_BUSY);
+}
+
+async function scRcUiLoadArchives() {
+  const sel = $('#scrcBackup');
+  if (!sel || S.role !== 'pemilik' || SC_RC_UI_BUSY) return;
+  const oldId = sel.value;
+  scRcUiSetBusy(true);
+  scRcUiMessage('Memuat arsip cadangan untuk pemeriksaan...');
+  try {
+    const result = await apiRaw('dbBackupList');
+    if (tab !== 'Pengaturan' || !$('#scrcBackup')) return;
+    const list = Array.isArray(result.items) ? result.items : [];
+    const choices = [new Option('Pilih arsip database...', '')];
+    list.forEach(item => {
+      const id = String(item.id || '');
+      if (!/^[A-Za-z0-9_-]{10,}$/.test(id)) return;
+      const label = String(item.waktu || '-') + ' | ' + String(item.jenis || '-') + ' | ' + String(item.name || 'Backup');
+      choices.push(new Option(label, id));
+    });
+    sel.replaceChildren(...choices);
+    if (oldId && choices.some(x => x.value === oldId)) sel.value = oldId;
+    else { sel.value = ''; scRcUiSelectionChanged(); }
+    scRcUiMessage(list.length ? 'Pilih arsip, lalu klik Periksa sebelum pemulihan.' : 'Belum ada arsip database untuk diperiksa.');
+  } catch (e) {
+    if ($('#scrcBackup')) scRcUiMessage('Gagal mengambil daftar arsip: ' + e.message, true);
+  } finally {
+    scRcUiSetBusy(false);
+  }
+}
+
+function scRcUiText(parent, tag, value, className) {
+  const el = document.createElement(tag);
+  el.textContent = String(value ?? '');
+  if (className) el.className = className;
+  parent.appendChild(el);
+  return el;
+}
+
+function scRcUiTable(rows, headers) {
+  const table = document.createElement('table');
+  const head = document.createElement('tr');
+  headers.forEach(v => scRcUiText(head, 'th', v));
+  table.appendChild(head);
+  rows.forEach(cells => {
+    const tr = document.createElement('tr');
+    cells.forEach(v => scRcUiText(tr, 'td', v));
+    table.appendChild(tr);
+  });
+  return table;
+}
+
+async function scRcUiPreview() {
+  const sel = $('#scrcBackup');
+  if (!sel || S.role !== 'pemilik' || SC_RC_UI_BUSY) return;
+  const id = sel.value;
+  if (!/^[A-Za-z0-9_-]{10,}$/.test(id)) {
+    scRcUiMessage('Pilih arsip yang valid terlebih dahulu.', true);
+    return;
+  }
+  SC_RC_UI_PREVIEW_ID = '';
+  const box = $('#scrcPreview');
+  if (box) box.replaceChildren();
+  const prepared = $('#scrcPrepared');
+  if (prepared) prepared.replaceChildren();
+  scRcUiSetBusy(true);
+  scRcUiMessage('Sedang memeriksa arsip, struktur sheet, dan ringkasan transaksi...');
+  try {
+    const result = await apiRaw('dbRestorePreview', {id});
+    if (tab !== 'Pengaturan' || !$('#scrcPreview') || !$('#scrcBackup') || $('#scrcBackup').value !== id) return;
+    const view = $('#scrcPreview');
+    scRcUiText(view, 'h2', 'Hasil pemeriksaan: ' + String(result.namaBackup || 'Database'));
+    scRcUiText(view, 'p', 'Tanggal arsip: ' + String(result.waktuBackup || '-') + ' | Slot belum idle: ' + String(result.slotBelumIdle ?? '-'), 'mut');
+
+    const comparison = Array.isArray(result.perbandingan) ? result.perbandingan : [];
+    scRcUiText(view, 'h3', 'Perbandingan jumlah baris');
+    view.appendChild(scRcUiTable(comparison.map(r => [
+      String(r.sheet || '-'),
+      String(r.barisBackup ?? '-'),
+      r.barisAktif === null || r.barisAktif === undefined ? 'Tidak ada' : String(r.barisAktif)
+    ]), ['Sheet', 'Arsip', 'Database aktif']));
+
+    const token = result.pemeriksaanToken || {};
+    scRcUiText(view, 'h3', 'Pemeriksaan riwayat token');
+    const fields = [
+      ['Jumlah mutasi', 'transaksi'],
+      ['Transaksi Top Up', 'topUp'],
+      ['Pemakaian', 'pemakaian'],
+      ['ID transaksi ganda', 'idGanda'],
+      ['Baris transaksi tidak valid', 'barisTidakValid'],
+      ['Saldo tidak sesuai dengan mutasi', 'ringkasanTidakSesuai'],
+      ['Saldo ringkasan tidak valid', 'ringkasanTidakValid'],
+      ['Saldo negatif dari mutasi', 'saldoNegatif']
+    ];
+    view.appendChild(scRcUiTable(fields.map(([label,key]) => [label, String(token[key] ?? '-')]), ['Pemeriksaan', 'Hasil']));
+
+    const warnings = Array.isArray(result.peringatan) ? result.peringatan : [];
+    scRcUiText(view, 'h3', 'Peringatan');
+    if (warnings.length) {
+      const ul = document.createElement('ul');
+      warnings.forEach(w => scRcUiText(ul, 'li', w));
+      view.appendChild(ul);
+      scRcUiText(view, 'p', 'Periksa semua peringatan tersebut. Salinan uji tidak memperbaiki saldo atau transaksi.', 'err');
+    } else {
+      scRcUiText(view, 'p', 'Tidak ada peringatan dari pemeriksaan otomatis ini. Tetap verifikasi transaksi dan saldo secara manual sebelum melakukan pemulihan apa pun.', 'mut');
+    }
+    SC_RC_UI_PREVIEW_ID = id;
+    scRcUiMessage('Pemeriksaan selesai. Database aktif tetap tidak berubah. Anda dapat membuat salinan uji.');
+  } catch (e) {
+    if ($('#scrcPreview')) scRcUiMessage('Pemeriksaan gagal: ' + e.message, true);
+  } finally {
+    scRcUiSetBusy(false);
+  }
+}
+
+async function scRcUiPrepare() {
+  const sel = $('#scrcBackup');
+  if (!sel || S.role !== 'pemilik' || SC_RC_UI_BUSY) return;
+  const id = sel.value;
+  if (!id || id !== SC_RC_UI_PREVIEW_ID) {
+    scRcUiMessage('Periksa arsip yang dipilih terlebih dahulu.', true);
+    return;
+  }
+  if (!confirm('Buat SALINAN UJI dari cadangan terpilih di Google Drive?\n\nTindakan ini TIDAK mengembalikan atau menimpa database Billing aktif.')) return;
+  scRcUiSetBusy(true);
+  scRcUiMessage('Membuat salinan uji database di Google Drive...');
+  try {
+    const result = await apiRaw('dbRestorePrepare', {id});
+    if (tab !== 'Pengaturan' || !$('#scrcPrepared') || !$('#scrcBackup') || $('#scrcBackup').value !== id) return;
+    const box = $('#scrcPrepared');
+    box.replaceChildren();
+    scRcUiText(box, 'h3', result.berhasil ? 'Salinan uji berhasil dibuat' : 'Hasil pembuatan salinan');
+    scRcUiText(box, 'p', String(result.pesan || '') + ' | File: ' + String(result.fileUji || '-'), 'mut');
+    const fileLine = document.createElement('p');
+    fileLine.appendChild(scDbUiMakeLink(result.url, 'Buka salinan uji di Google Drive'));
+    box.appendChild(fileLine);
+    const folderLine = document.createElement('p');
+    folderLine.appendChild(scDbUiMakeLink(result.folderUrl, 'Buka folder Salinan Uji', 'folder'));
+    box.appendChild(folderLine);
+    scRcUiMessage('SUKSES: salinan uji dibuat. Spreadsheet Billing aktif tidak berubah.');
+  } catch (e) {
+    if ($('#scrcPrepared')) scRcUiMessage('Gagal membuat salinan uji: ' + e.message, true);
+  } finally {
+    scRcUiSetBusy(false);
   }
 }
 
