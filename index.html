@@ -830,6 +830,17 @@ async function vSet() {
   <p id="screscueMessage" class="mut" role="status" aria-live="polite"></p>
   <div id="screscueResult" class="wrap" style="margin-top:10px"></div>
   <p class="mut" style="margin-top:12px"><b>Catatan:</b> Setelah membuat cadangan dan selesai melakukan pekerjaan pemeliharaan, nonaktifkan Mode Pemeliharaan secara manual. Modul ini tidak menjalankan pemulihan database produksi.</p></div>
+  <div class="card" id="scplCard"><h2>Rencana Pemulihan Produksi — Pemeriksaan Aman</h2>
+  <p class="mut">Khusus pemilik. Memeriksa konflik antara <b>backup AUTO/MANUAL terbaru</b> dan database Billing aktif, lalu membuat <b>salinan rencana</b> di Google Drive. <b>Tidak ada data aktif yang dipulihkan atau ditimpa.</b></p>
+  <div id="scplStatus" class="mut" role="status" aria-live="polite">Aktifkan Mode Pemeliharaan sebelum memeriksa rencana.</div>
+  <div class="row" style="margin-top:12px">
+    <button type="button" class="sec" id="scplPreviewBtn" onclick="scPlUiPreview()">Periksa Konflik &amp; Keputusan</button>
+    <button type="button" id="scplCreateBtn" disabled onclick="scPlUiCreate()">Buat Salinan Rencana</button>
+  </div>
+  <p id="scplMessage" class="mut" role="status" aria-live="polite"></p>
+  <div id="scplPreview" class="wrap" style="margin-top:10px"></div>
+  <div id="scplCreated" style="margin-top:10px"></div>
+  <p class="mut" style="margin-top:12px"><b>Peringatan penting:</b> Status <b>STOP - JANGAN RESTORE</b> berarti arsip berisiko menghilangkan atau mengubah data. Pembuatan <b>salinan rencana</b> tetap boleh dilakukan untuk audit; itu <b>bukan persetujuan restore produksi</b>. Selesaikan pekerjaan lalu nonaktifkan Mode Pemeliharaan secara manual.</p></div>
   <div class="card" id="scrcCard"><h2>Pemulihan Database — Mode Aman</h2>
   <p class="mut">Pilih salah satu arsip database untuk membandingkan jumlah baris, memeriksa catatan token, dan menyiapkan <b>salinan uji</b> di Google Drive. <b>Fitur ini tidak mengembalikan atau menimpa database Billing aktif.</b></p>
   <label for="scrcBackup">Arsip yang ingin diperiksa</label>
@@ -853,6 +864,7 @@ async function vSet() {
   scMtUiRefresh().finally(() => scRsUiCheck());
   scDbBackupUiRefresh();
   scRcUiLoadArchives();
+  scPlUiReset();
 }
 async function saveSet() {
   const o = {}; ['appName','title','theme','font','warnSec','slotCount','backupHour','readyMin','lkUrl','lkKey','lkSecret','resetPass','resetPin','billingPublicUrl'].forEach(k => o[k] = $('#f_'+k).value);
@@ -1080,6 +1092,7 @@ function scMtUiRender(st) {
   SC_MT_UI_STATE = st;
   // Status penyelamatan tidak boleh digunakan setelah perubahan mode.
   if (typeof scRsUiInvalidate === 'function') scRsUiInvalidate();
+  if (typeof scPlUiMaintenanceChanged === 'function') scPlUiMaintenanceChanged(st);
   const status = $('#scmtStatus'), details = $('#scmtDetails');
   status.className = st.aktif ? 'warn' : 'msg';
   status.textContent = st.aktif ?
@@ -1628,6 +1641,225 @@ async function scRcUiPrepare() {
     if ($('#scrcPrepared')) scRcUiMessage('Gagal membuat salinan uji: ' + e.message, true);
   } finally {
     scRcUiSetBusy(false);
+  }
+}
+
+
+/* ========== RENCANA PEMULIHAN: AUDIT DAN SALINAN AMAN ==========
+ * Backend: dbRestorePlanPreview / dbRestorePlanCreate (akses pemilik).
+ * API selalu memakai arsip AUTO/MANUAL paling baru; pengguna tidak memilih ID.
+ * Backend menjalankan pemeriksaan Mode Pemeliharaan, Rescue, dan konflik ulang.
+ * PERINGATAN: Tidak ada API di sini untuk menimpa database aktif.
+ */
+let SC_PL_UI_BUSY = false;
+let SC_PL_UI_PREVIEW_AT = 0;
+let SC_PL_UI_LAST_ARCHIVE = '';
+const SC_PL_UI_MAX_PREVIEW_AGE = 60000;
+
+function scPlUiStatus(text, isError = false) {
+  const el = $('#scplStatus');
+  if (!el) return;
+  el.className = isError ? 'err' : 'mut';
+  el.textContent = String(text || '');
+}
+function scPlUiMessage(text, isError = false) {
+  const el = $('#scplMessage');
+  if (!el) return;
+  el.className = isError ? 'err' : 'mut';
+  el.textContent = String(text || '');
+}
+function scPlUiClearPreview() {
+  SC_PL_UI_PREVIEW_AT = 0;
+  SC_PL_UI_LAST_ARCHIVE = '';
+  const view = $('#scplPreview');
+  if (view) view.replaceChildren();
+  const created = $('#scplCreated');
+  if (created) created.replaceChildren();
+  scPlUiButtons();
+}
+function scPlUiButtons() {
+  const preview = $('#scplPreviewBtn');
+  const create = $('#scplCreateBtn');
+  if (!preview || !create) return;
+  const maintained = SC_MT_UI_STATE && SC_MT_UI_STATE.aktif === true;
+  const fresh = SC_PL_UI_PREVIEW_AT > 0 &&
+    (Date.now() - SC_PL_UI_PREVIEW_AT <= SC_PL_UI_MAX_PREVIEW_AGE);
+  preview.disabled = SC_PL_UI_BUSY || !maintained;
+  create.disabled = SC_PL_UI_BUSY || !maintained || !fresh || !SC_PL_UI_LAST_ARCHIVE;
+}
+function scPlUiMaintenanceChanged(st) {
+  if (!$('#scplCard')) return;
+  // Any server-side maintenance refresh invalidates the previous audit.
+  scPlUiClearPreview();
+  scPlUiStatus(st && st.aktif ?
+    'Mode Pemeliharaan AKTIF. Anda dapat memeriksa backup AUTO/MANUAL terbaru.' :
+    'Mode Pemeliharaan tidak aktif. Aktifkan terlebih dahulu untuk pemeriksaan rencana.');
+  scPlUiMessage('');
+  scPlUiButtons();
+}
+function scPlUiReset() {
+  SC_PL_UI_BUSY = false;
+  scPlUiClearPreview();
+  const maintenance = SC_MT_UI_STATE;
+  scPlUiStatus(maintenance && maintenance.aktif ?
+    'Mode Pemeliharaan terdeteksi aktif. Periksa konflik sebelum membuat rencana.' :
+    'Menunggu pemeriksaan Mode Pemeliharaan dari server...');
+  scPlUiMessage('');
+  scPlUiButtons();
+}
+function scPlUiDecisionKind(decision) {
+  const s = String(decision || '').toUpperCase();
+  if (s.indexOf('STOP') === 0 || s.indexOf('BLOKIR') >= 0) return 'stop';
+  if (s.indexOf('TIDAK PERLU') === 0) return 'identik';
+  return 'tinjau';
+}
+function scPlUiRenderPreview(result) {
+  const view = $('#scplPreview');
+  if (!view) return;
+  view.replaceChildren();
+  const decision = String(result.keputusan || 'PERLU TINJAUAN');
+  const kind = scPlUiDecisionKind(decision);
+  const heading = scRcUiText(view, 'h3', 'Keputusan: ' + decision);
+  heading.className = kind === 'stop' ? 'err' : kind === 'identik' ? 'msg' : 'warn';
+  scRcUiText(view, 'p', String(result.penjelasan || 'Jangan menjalankan restore produksi tanpa peninjauan.'), 'mut');
+  scRcUiText(view, 'p', 'Sumber: ' + String(result.namaArsip || '-') +
+    ' | Waktu arsip: ' + String(result.waktuArsip || '-') +
+    ' | Status audit: ' + String(result.statusAudit || '-'), 'mut');
+  const metrics = [
+    ['Transaksi di database aktif', result.jumlahTransaksiAktif],
+    ['Transaksi di arsip', result.jumlahTransaksiArsip],
+    ['Transaksi aktif tidak ada di arsip', result.transaksiTidakAdaDiArsip],
+    ['ID sama dengan isi berbeda', result.transaksiDenganIdSamaBerbeda],
+    ['Transaksi hanya terdapat di arsip', result.transaksiHanyaDiArsip]
+  ];
+  scRcUiText(view, 'h3', 'Pemeriksaan transaksi');
+  view.appendChild(scRcUiTable(metrics.map(([label, value]) => [label, String(value ?? '-')]), ['Pemeriksaan', 'Jumlah']));
+  const warnings = Array.isArray(result.peringatan) ? result.peringatan : [];
+  scRcUiText(view, 'h3', 'Peringatan audit');
+  if (warnings.length) {
+    const ul = document.createElement('ul');
+    warnings.slice(0, 40).forEach(w => scRcUiText(ul, 'li', w));
+    view.appendChild(ul);
+    if (warnings.length > 40) scRcUiText(view, 'p', 'Peringatan lain: ' + (warnings.length - 40) + ' item. Periksa laporan di Drive.', 'mut');
+  } else {
+    scRcUiText(view, 'p', 'Tidak ada peringatan tambahan dalam pemeriksaan ini. Ini bukan izin otomatis untuk restore.', 'mut');
+  }
+  const sheets = Array.isArray(result.sheets) ? result.sheets : [];
+  scRcUiText(view, 'h3', 'Rencana tiap sheet (' + sheets.length + ')');
+  view.appendChild(scRcUiTable(sheets.slice(0, 100).map(sh => [
+    String(sh.sheet || '-'),
+    String(sh.barisAktif ?? '-'),
+    String(sh.barisArsip ?? '-'),
+    String(sh.nilai || '-'),
+    String(sh.rumus || '-'),
+    String(sh.tindakan || '-'),
+    String(sh.alasan || '-')
+  ]), ['Sheet', 'Baris aktif', 'Baris arsip', 'Nilai', 'Rumus', 'Tindakan', 'Alasan']));
+  if (sheets.length > 100) scRcUiText(view, 'p', 'Tampilan dibatasi pada 100 sheet pertama.', 'mut');
+  scRcUiText(view, 'p', 'Database aktif diubah: ' +
+    (result.pemulihanDatabaseAktifDilakukan === false ? 'TIDAK' : 'STATUS BELUM TERKONFIRMASI'), 'mut');
+  if (kind === 'stop') {
+    scRcUiText(view, 'p', 'STOP: Jangan memulihkan arsip ini ke database aktif. Tombol Buat Salinan Rencana hanya menyimpan dokumen audit.', 'err');
+  } else if (kind === 'tinjau') {
+    scRcUiText(view, 'p', 'TINJAU MANUAL: Perbedaan harus dikaji sebelum pemulihan produksi.', 'warn');
+  } else {
+    scRcUiText(view, 'p', 'Data identik dalam cakupan audit: pemulihan tidak diperlukan.', 'mut');
+  }
+}
+async function scPlUiPreview() {
+  if (S.role !== 'pemilik' || tab !== 'Pengaturan' || !$('#scplCard') || SC_PL_UI_BUSY) return;
+  if (!SC_MT_UI_STATE || SC_MT_UI_STATE.aktif !== true) {
+    scPlUiMessage('Aktifkan Mode Pemeliharaan terlebih dahulu.', true);
+    return;
+  }
+  scPlUiClearPreview();
+  SC_PL_UI_BUSY = true;
+  scPlUiButtons();
+  scPlUiStatus('Sedang membaca arsip AUTO/MANUAL terbaru dan membandingkan data...');
+  scPlUiMessage('Pemeriksaan ini tidak menimpa database aktif.');
+  try {
+    const result = await apiRaw('dbRestorePlanPreview');
+    if (tab !== 'Pengaturan' || !$('#scplCard')) return;
+    if (!result || result.pemulihanDatabaseAktifDilakukan !== false ||
+        !result.keputusan || !result.idArsip) {
+      throw new Error('Hasil server tidak lengkap atau status keamanan tidak terkonfirmasi.');
+    }
+    scPlUiRenderPreview(result);
+    SC_PL_UI_LAST_ARCHIVE = String(result.idArsip);
+    SC_PL_UI_PREVIEW_AT = Date.now();
+    scPlUiStatus('Audit selesai. Keputusan: ' + String(result.keputusan));
+    scPlUiMessage('Anda boleh membuat SALINAN RENCANA untuk dokumentasi, termasuk jika keputusan STOP. Ini bukan restore.');
+  } catch (error) {
+    scPlUiClearPreview();
+    if (tab === 'Pengaturan' && $('#scplCard')) {
+      scPlUiStatus('Audit rencana belum berhasil.', true);
+      scPlUiMessage('Gagal memeriksa: ' + error.message +
+        '. Pastikan Mode Pemeliharaan aktif dan tidak ada transaksi berjalan.', true);
+    }
+  } finally {
+    SC_PL_UI_BUSY = false;
+    scPlUiButtons();
+  }
+}
+async function scPlUiCreate() {
+  if (S.role !== 'pemilik' || tab !== 'Pengaturan' || !$('#scplCard') || SC_PL_UI_BUSY) return;
+  if (!SC_MT_UI_STATE || !SC_MT_UI_STATE.aktif || !SC_PL_UI_LAST_ARCHIVE ||
+      !SC_PL_UI_PREVIEW_AT || Date.now() - SC_PL_UI_PREVIEW_AT > SC_PL_UI_MAX_PREVIEW_AGE) {
+    scPlUiClearPreview();
+    scPlUiMessage('Audit sudah tidak berlaku. Klik Periksa Konflik & Keputusan lagi.', true);
+    return;
+  }
+  const accepted = confirm('Buat SALINAN RENCANA pemulihan di Google Drive?\n\n' +
+    'Server akan membuat Backup Penyelamatan baru dan memeriksa konflik ulang.\n' +
+    'Tindakan ini TIDAK memulihkan atau menimpa database Billing aktif.\n\n' +
+    'Status STOP/TINJAU hanya dicatat sebagai laporan, bukan izin restore.');
+  if (!accepted) return;
+  SC_PL_UI_BUSY = true;
+  scPlUiButtons();
+  scPlUiMessage('Membuat Rescue dan file rencana. Jangan menekan tombol berulang.');
+  const created = $('#scplCreated');
+  if (created) created.replaceChildren();
+  try {
+    const result = await apiRaw('dbRestorePlanCreate');
+    if (tab !== 'Pengaturan' || !$('#scplCard')) return;
+    if (result.status !== 'RENCANA PEMULIHAN DIBUAT' ||
+        result.databaseAktifDiubah !== false || result.restoreProduksiDilakukan !== false) {
+      throw new Error('Server tidak memberikan konfirmasi keamanan yang diharapkan. Periksa arsip di Drive.');
+    }
+    const box = $('#scplCreated');
+    scRcUiText(box, 'h3', 'RENCANA PEMULIHAN DIBUAT');
+    scRcUiText(box, 'p', 'File: ' + String(result.namaFile || '-') +
+      ' | Keputusan: ' + String(result.keputusan || '-') +
+      ' | Jumlah sheet: ' + String(result.jumlahSheetRencana ?? '-') +
+      ' | Database aktif tidak diubah.', 'mut');
+    const links = [
+      [result.url, 'Buka file Rencana Pemulihan'],
+      [result.rescueUrl, 'Buka Backup Penyelamatan'],
+      [result.folderUrl, 'Buka folder Salinan Uji', 'folder']
+    ];
+    links.forEach(([url, label, type]) => {
+      const p = document.createElement('p');
+      p.appendChild(scDbUiMakeLink(url, label, type || 'file'));
+      box.appendChild(p);
+    });
+    if (Array.isArray(result.peringatan) && result.peringatan.length) {
+      scRcUiText(box, 'p', 'Peringatan: ' + result.peringatan.slice(0, 5).join('; '), 'warn');
+    }
+    scPlUiStatus('SALINAN RENCANA BERHASIL DIBUAT. Tidak ada restore produksi.');
+    scPlUiMessage('Simpan file rencana dan Rescue. Mode Pemeliharaan tetap aktif sampai Anda menonaktifkannya.');
+    // Audit lama tidak lagi berlaku untuk operasi berikutnya.
+    SC_PL_UI_PREVIEW_AT = 0;
+    SC_PL_UI_LAST_ARCHIVE = '';
+    scDbBackupUiRefresh();
+    scRsUiInvalidate();
+  } catch (error) {
+    scPlUiMessage('Pembuatan rencana gagal atau belum pasti: ' + error.message +
+      '. Periksa folder Google Drive sebelum mengulang.', true);
+    SC_PL_UI_PREVIEW_AT = 0;
+    SC_PL_UI_LAST_ARCHIVE = '';
+  } finally {
+    SC_PL_UI_BUSY = false;
+    scPlUiButtons();
   }
 }
 
