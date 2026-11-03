@@ -794,6 +794,17 @@ async function vSet() {
   <div class="card"><h2>Perangkat & backup</h2><p class="mut">Waktu video call otomatis memakai saldo token. Batas tunggu orang tua tetap berlaku sebelum panggilan tersambung.</p><div class="row">${f('warnSec','Peringatan saat sisa durasi (detik)',s.warnSec,'number')}${f('slotCount','Jumlah HP aktif (maks 30)',s.slotCount,'number')}${f('backupHour','Jam backup otomatis (0-23)',s.backupHour,'number')}${f('readyMin','Batas tunggu orang tua masuk (menit)',s.readyMin,'number')}</div>
 
   <button class="sec" style="margin-top:10px" onclick="backup()">Backup log sekarang</button> <span id="bk" class="mut"></span></div>
+  <div class="card" id="scmtCard"><h2>Mode Pemeliharaan Billing</h2>
+  <p class="mut">Khusus pemilik. Gunakan saat perawatan atau sebelum pemulihan database. Ketika aktif, sistem menolak panggilan, Top Up, aktivasi perangkat, dan perubahan data baru. Mode ini <b>tidak melakukan pemulihan data</b>.</p>
+  <div id="scmtStatus" class="mut" role="status" aria-live="polite">Memeriksa status pemeliharaan...</div>
+  <p class="mut" id="scmtDetails"></p>
+  <div class="row" style="margin-top:12px">
+    <button type="button" id="scmtOnBtn" disabled onclick="scMtUiOn()">Aktifkan Mode Pemeliharaan</button>
+    <button type="button" class="bad" id="scmtOffBtn" disabled onclick="scMtUiOff()">Nonaktifkan Mode Pemeliharaan</button>
+    <button type="button" class="sec" id="scmtRefreshBtn" onclick="scMtUiRefresh()">Perbarui status</button>
+  </div>
+  <p class="mut" id="scmtMessage" role="status" aria-live="polite"></p>
+  <p class="mut"><b>Perhatian:</b> Aktifkan hanya ketika seluruh slot idle dan tidak ada transaksi berjalan. Sistem memeriksa kedua kondisi tersebut lagi di server. Jangan tinggalkan mode ini aktif setelah selesai melakukan perawatan.</p></div>
   <div class="card" id="scdbCard"><h2>Backup Database Lengkap</h2>
   <p class="mut">Cadangan seluruh data Billing termasuk Users, MasterToken, SaldoToken, MutasiToken, dan perangkat orang tua. Data asli tidak dikosongkan. Backup Log lama tetap terpisah.</p>
   <div id="scdbStatus" class="mut" role="status" aria-live="polite">Memeriksa jadwal backup...</div>
@@ -827,6 +838,7 @@ async function vSet() {
   <div class="card" style="margin-top:14px"><h2>Nama HP</h2><p class="mut">Ubah nama tampilan tiap HP (sesuai stiker).</p>
   <div class="wrap"><table>${dv.map(d => `<tr><td>${d.slot}</td><td><input id="dn${d.slot}" value="${esc(d.nama)}"></td><td style="white-space:nowrap"><button class="sec sm" onclick="saveDev(${d.slot})">Simpan</button></td></tr>`).join('')}</table></div></div>`;
   scLoadDevices();
+  scMtUiRefresh();
   scDbBackupUiRefresh();
   scRcUiLoadArchives();
 }
@@ -1027,6 +1039,111 @@ function scDbUiMakeLink(raw, label, type = 'file') {
   a.rel = 'noopener noreferrer';
   return a;
 }
+
+/* ============ MODE PEMELIHARAAN: API KHUSUS PEMILIK ============
+ * Menampilkan status asli dari server; status tidak disimpan di browser.
+ * Tidak ada operasi restore database dalam tombol-tombol berikut.
+ */
+let SC_MT_UI_BUSY = false;
+let SC_MT_UI_STATE = null;
+function scMtUiMessage(text, isError = false) {
+  const el = $('#scmtMessage');
+  if (!el) return;
+  el.className = isError ? 'err' : 'msg';
+  el.textContent = text || '';
+}
+function scMtUiButtons() {
+  const on = $('#scmtOnBtn'), off = $('#scmtOffBtn'), refresh = $('#scmtRefreshBtn');
+  if (!on || !off || !refresh) return;
+  const st = SC_MT_UI_STATE;
+  const slots = st ? Number(st.slotBelumIdle) : NaN;
+  const pending = st ? Number(st.transaksiBerjalan) : NaN;
+  on.disabled = SC_MT_UI_BUSY || !st || st.aktif ||
+    !Number.isFinite(slots) || !Number.isFinite(pending) || slots !== 0 || pending !== 0;
+  off.disabled = SC_MT_UI_BUSY || !st || !st.aktif;
+  refresh.disabled = SC_MT_UI_BUSY;
+}
+function scMtUiRender(st) {
+  if (!$('#scmtCard')) return;
+  SC_MT_UI_STATE = st;
+  const status = $('#scmtStatus'), details = $('#scmtDetails');
+  status.className = st.aktif ? 'warn' : 'msg';
+  status.textContent = st.aktif ?
+    'MODE PEMELIHARAAN AKTIF — transaksi dan panggilan baru diblokir.' :
+    'MODE NORMAL — Billing bisa digunakan seperti biasa.';
+  const slots = Number(st.slotBelumIdle);
+  const pending = Number(st.transaksiBerjalan);
+  const parts = [
+    'Slot belum idle: ' + (Number.isFinite(slots) ? slots : 'tidak diketahui'),
+    'Transaksi berjalan: ' + (Number.isFinite(pending) ? pending : 'tidak diketahui')
+  ];
+  if (st.aktif) {
+    parts.push('Aktif sejak: ' + String(st.sejak || '-'));
+    parts.push('Diaktifkan oleh: ' + String(st.oleh || '-'));
+  }
+  details.textContent = parts.join(' | ');
+  scMtUiButtons();
+}
+async function scMtUiRefresh() {
+  if (S.role !== 'pemilik' || !$('#scmtCard') || SC_MT_UI_BUSY) return;
+  SC_MT_UI_BUSY = true;
+  scMtUiButtons();
+  const status = $('#scmtStatus');
+  status.className = 'mut';
+  status.textContent = 'Memeriksa status langsung dari server...';
+  try {
+    const result = await apiRaw('maintenanceStatus');
+    if (tab !== 'Pengaturan' || !$('#scmtCard')) return;
+    scMtUiRender(result);
+    scMtUiMessage('Status berhasil diperbarui.');
+  } catch (e) {
+    SC_MT_UI_STATE = null;
+    if (tab === 'Pengaturan' && $('#scmtStatus')) {
+      status.className = 'err';
+      status.textContent = 'Status tidak dapat diperiksa.';
+      $('#scmtDetails').textContent = '';
+      scMtUiMessage('Gagal memuat status: ' + e.message, true);
+    }
+  } finally {
+    SC_MT_UI_BUSY = false;
+    scMtUiButtons();
+  }
+}
+async function scMtUiToggle(enable) {
+  if (S.role !== 'pemilik' || !$('#scmtCard') || SC_MT_UI_BUSY || !SC_MT_UI_STATE) return;
+  const st = SC_MT_UI_STATE;
+  if (enable) {
+    if (st.aktif) return;
+    if (Number(st.slotBelumIdle) !== 0 || Number(st.transaksiBerjalan) !== 0) {
+      scMtUiMessage('Belum dapat mengaktifkan: masih ada slot atau transaksi berjalan.', true);
+      return;
+    }
+    const value = prompt('Semua santri sudah keluar dan tidak ada transaksi berjalan?\n\nKetik AKTIFKAN untuk menutup sementara panggilan, Top Up, dan perubahan data.');
+    if (value !== 'AKTIFKAN') return;
+  } else {
+    if (!st.aktif) return;
+    if (!confirm('Nonaktifkan Mode Pemeliharaan dan buka kembali akses Billing untuk santri dan operator? Pastikan tidak ada proses pemulihan yang sedang berjalan.')) return;
+  }
+  SC_MT_UI_BUSY = true;
+  scMtUiButtons();
+  scMtUiMessage(enable ? 'Mengaktifkan mode pemeliharaan...' : 'Menonaktifkan mode pemeliharaan...');
+  try {
+    const result = await apiRaw(enable ? 'maintenanceOn' : 'maintenanceOff');
+    if (tab !== 'Pengaturan' || !$('#scmtCard')) return;
+    scMtUiRender(result);
+    scMtUiMessage(enable ?
+      'SUKSES: mode pemeliharaan aktif. Panggilan dan transaksi baru diblokir.' :
+      'SUKSES: mode pemeliharaan nonaktif. Billing kembali normal.');
+  } catch (e) {
+    scMtUiMessage('Perubahan gagal: ' + e.message + ' Klik Perbarui status untuk memastikan kondisi server.', true);
+    SC_MT_UI_STATE = null; // Jangan tawarkan tombol berbahaya jika keadaan server belum pasti.
+  } finally {
+    SC_MT_UI_BUSY = false;
+    scMtUiButtons();
+  }
+}
+function scMtUiOn() { return scMtUiToggle(true); }
+function scMtUiOff() { return scMtUiToggle(false); }
 
 async function scDbBackupUiRefresh() {
   const target = $('#scdbStatus');
