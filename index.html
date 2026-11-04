@@ -69,6 +69,7 @@ td,th{border-bottom:1px solid var(--bd);padding:6px;text-align:left}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.js"></script>
 <script>
 /* Alamat Apps Script (API) ada di file config.js */
+/* HOTFIX-FCM-20261104: undangan dikirim sesaat setelah room READY. */
 
 const $ = s => document.querySelector(s);
 const THEMES = {
@@ -377,17 +378,13 @@ async function siapkan() {
     $('#app').innerHTML = `<div class="card center" style="max-width:520px">${callBox('Menunggu orang tua masuk...')}<div id="info"></div></div>`;
     showReady();
     ringStart();
+    // Kirim undangan segera setelah ruang READY. Jangan menunggu koneksi kamera/LiveKit.
+    // Panggilan FCM terpisah: error FCM tidak membatalkan panggilan VC.
+    scSendInviteNow();
     // Jangan memasang auto-reconnect sebelum koneksi pertama sukses.
     try { await lkConnect(j.url, j.token); S.onDisc = reconnect; }
     catch (err) { scLinkFailure(err.message); return; }
-    // Pengiriman notif APK tetap terpisah: kegagalan FCM tidak membatalkan VC.
-    api('sendInvite').then(x => {
-      const el = $('#scPush');
-      if (el) el.textContent = x.status === 'sent' ? 'Notifikasi SantriCall dikirim ke ' + x.sent + ' HP orang tua.'
-        : x.status === 'unpaired' ? 'HP orang tua belum dipasangkan ke SantriCall. Kirim link via WhatsApp.'
-        : x.status === 'url_missing' ? 'Alamat publik Billing belum diatur pemilik. Gunakan WhatsApp.'
-        : 'Notifikasi APK belum terkirim (' + x.status + '). Gunakan WhatsApp.';
-    }).catch(e => { const el=$('#scPush'); if (el) el.textContent='Notifikasi APK gagal: '+e.message+'. WhatsApp tetap tersedia.'; });
+
   } catch (e) {
     if (document.contains(eEl)) eEl.textContent = e.message;
     // Jika request prepare timeout sesudah server membuat ruang, beri jalan keluar aman.
@@ -402,6 +399,31 @@ async function siapkan() {
     if (document.contains(btn)) { btn.disabled = false; btn.textContent = 'Mulai video call'; }
   }
 }
+// HOTFIX NOTIF: kirim undangan saat ruang siap, bukan setelah lkConnect selesai.
+let SC_PUSH_BUSY = false;
+async function scSendInviteNow() {
+  if (SC_PUSH_BUSY || !S.token || S.st !== 'ready') return;
+  SC_PUSH_BUSY = true;
+  const el = $('#scPush');
+  if (el) el.textContent = 'Mengirim undangan ke APK Orang Tua...';
+  try {
+    const x = await api('sendInvite');
+    const msgs = {
+      sent: 'Firebase menerima undangan untuk ' + Number(x.sent || 0) + ' perangkat. Jika belum berdering, tes APK dan izin notifikasi di HP Orang Tua.',
+      unpaired: 'Nomor tujuan TIDAK cocok dengan nomor APK yang aktif. Periksa Pengaturan Billing → Perangkat Orang Tua.',
+      url_missing: 'Alamat publik Billing belum disetel. Isi URL GitHub Pages pada Pengaturan Billing → Alamat Publik Billing.',
+      failed: 'Pengiriman FCM gagal. Periksa Apps Script → Eksekusi, cari catatan Push gagal; uji notifikasi pada Perangkat Orang Tua.',
+      limited: 'Undangan baru saja dicoba. Tunggu sedikitnya 30 detik sebelum mengirim ulang.',
+      expired: 'Undangan sudah kedaluwarsa. Akhiri dan buat panggilan baru.'
+    };
+    const message = msgs[x.status] || 'Status undangan: ' + String(x.status || 'tidak diketahui') + '. Coba WhatsApp jika perlu.';
+    const next = $('#scPush'); if (next) next.textContent = message;
+  } catch (e) {
+    const next = $('#scPush');
+    if (next) next.textContent = 'Gagal meminta notifikasi APK: ' + String(e.message || e) + '. Pengiriman tautan lewat WhatsApp tetap tersedia.';
+  } finally { SC_PUSH_BUSY = false; }
+}
+
 async function reconnect() {
   if (!S.token || (S.st !== 'ready' && S.st !== 'on') || SC_REJOIN_BUSY || SC_END_BUSY) return;
   SC_REJOIN_BUSY = true;
@@ -430,7 +452,7 @@ function showReady() {
   const num = S.nomor.replace(/^\+/, '').replace(/^0/, '62');
   const txt = encodeURIComponent('Assalamualaikum. PANGGILAN VIDEO dari santri ' + S.nama + '. Mohon SEGERA klik link ini untuk menerima panggilan: ' + link);
   const txt2 = encodeURIComponent('Pengingat: ' + S.nama + ' sedang menunggu panggilan video. Mohon segera klik link ini: ' + link);
-  $('#info').innerHTML = `<p id="scPush" class="mut">Pemberitahuan SantriCall disiapkan setelah video tersambung.</p><a href="https://wa.me/${esc(num)}?text=${txt}" target="_blank" rel="noopener"><button style="width:100%;margin-bottom:8px">Kirim link ke WhatsApp orang tua</button></a>
+  $('#info').innerHTML = `<p id="scPush" class="mut">Menyiapkan notifikasi APK Orang Tua...</p><button class="sec sm" style="width:100%;margin-bottom:8px" onclick="scSendInviteNow()">Coba kirim undangan APK lagi (jika diperlukan)</button><a href="https://wa.me/${esc(num)}?text=${txt}" target="_blank" rel="noopener"><button style="width:100%;margin-bottom:8px">Kirim link ke WhatsApp orang tua</button></a>
   <button class="sec" style="width:100%;margin-bottom:8px" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(link)}');this.textContent='Tersalin'">Salin link</button>
   <a id="rm" style="display:none" href="https://wa.me/${esc(num)}?text=${txt2}" target="_blank" rel="noopener"><button class="sec" style="width:100%;margin-bottom:8px">Kirim pengingat lagi</button></a>
   <button class="sec sm" style="margin-bottom:8px" onclick="ringStop()">Bisukan nada tunggu</button>
