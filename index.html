@@ -83,6 +83,10 @@ let S = {}, CFG = {slotCount:20,warnSec:60}, T = {}, tab = '';
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let LB = null, LBT = 0;
+// HOTFIX: satu aksi login/panggilan pada satu waktu, cegah request bertumpuk.
+let SC_LOGIN_BUSY = false, SC_PREPARE_BUSY = false, SC_END_BUSY = false;
+let SC_REJOIN_BUSY = false, SC_BEAT_BUSY = false, SC_GUEST_BUSY = false;
+
 document.addEventListener('click', e => {
   const b = e.target.closest && e.target.closest('button');
   if (!b || b.disabled) return;
@@ -97,9 +101,18 @@ async function api(action, data = {}) {
 async function apiRaw(action, data = {}) {
   if (typeof API === 'undefined' || !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(API))
     throw new Error('Alamat Apps Script belum diisi benar di file config.js (harus diawali https://script.google.com/macros/s/ dan berakhiran /exec).');
+  // Batas waktu membuat layar tidak menggantung selamanya saat koneksi/server macet.
+  // Tidak ada retry otomatis untuk tindakan yang mengubah saldo atau status.
+  const timeoutMs = ['config','guestPeek','devices'].includes(action) ? 25000 : 55000;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), timeoutMs);
   let t;
-  try { const r = await fetch(API, {method:'POST', body:JSON.stringify({action, token:S.token, ...data})}); t = await r.text(); }
-  catch (e) { throw new Error('Tidak bisa menghubungi server. Periksa koneksi internet.'); }
+  try {
+    const r = await fetch(API, {method:'POST', body:JSON.stringify({action, token:S.token, ...data}), signal:ctl.signal});
+    t = await r.text();
+  } catch (e) {
+    if (ctl.signal.aborted) throw new Error('Server terlalu lama merespons. Jangan berulang kali menekan tombol; periksa status sesi lebih dulu.');
+    throw new Error('Tidak bisa menghubungi server. Periksa internet, lalu ulangi setelah kondisi stabil.');
+  } finally { clearTimeout(timer); }
   let j;
   try { j = JSON.parse(t); }
   catch (e) { throw new Error('Server Apps Script mengirim halaman, bukan data. Pastikan deployment memakai akses "Siapa saja" dan sudah Deploy versi baru.'); }
@@ -155,18 +168,30 @@ function staffLogin() {
   $('#btnOut').style.display = 'none';
 }
 async function doLogin(staff) {
-  const u = $('#u').value.trim(), p = $('#p').value;
-  if (!u || !p) { $('#e').textContent = 'Isi username dan kata sandi'; return; }
+  if (SC_LOGIN_BUSY) return;
+  const uEl = $('#u'), pEl = $('#p'), err = $('#e');
+  if (!uEl || !pEl) return;
+  const u = uEl.value.trim(), p = pEl.value;
+  if (!u || !p) { if (err) err.textContent = 'Isi username dan kata sandi'; return; }
+  SC_LOGIN_BUSY = true;
+  const b = document.querySelector('button[onclick^="doLogin"]');
+  if (b) { b.disabled = true; b.textContent = 'Memeriksa login...'; }
+  if (err) err.textContent = 'Menghubungkan ke server. Jangan tekan berulang.';
   try {
     const j = await api('login', {username:u, password:p, slot:staff ? 0 : S.slot});
     S = {...S, token:j.token, role:j.role, nama:j.nama, user:j.user, allowed:j.allowed, ortu:j.ortu};
     $('#btnOut').style.display = '';
     if (j.role === 'santri') santriHome(); else staffHome();
-  } catch (e) { $('#e').textContent = e.message; }
+  } catch (e) {
+    if (document.contains(err)) err.textContent = e.message + ' Jika status HP sudah terpakai, minta pengawas memeriksa slot.';
+  } finally {
+    SC_LOGIN_BUSY = false;
+    if (document.contains(b)) { b.disabled = false; b.textContent = 'Masuk'; }
+  }
 }
 async function logout() {
-  const wasSantri = S.role === 'santri';
-  try { await api(wasSantri ? 'end' : 'logout', {reason:'logout'}); } catch (e) {}
+  if (S.role === 'santri' && S.token) return selesai('logout santri');
+  try { await api('logout', {reason:'logout'}); } catch (e) {}
   S.token = null; toLogin();
 }
 
@@ -254,13 +279,25 @@ async function lkConnect(url, token) {
       room.localParticipant.setCameraEnabled(true).then(lkLocalPreview).catch(() => {});
     }
   });
-  await room.connect(url, token);
+  let connTimeout;
   try {
-    await room.localParticipant.setMicrophoneEnabled(true);
-    lkLocalPreview(await room.localParticipant.setCameraEnabled(true));
-  } catch (e) { throw new Error('Izinkan akses kamera dan mikrofon di pengaturan browser, lalu coba lagi.'); }
-  try { await room.startAudio(); } catch (e) {}
-  const b = $('#snd'); if (b) b.style.display = room.canPlaybackAudio ? 'none' : 'block';
+    await Promise.race([
+      room.connect(url, token),
+      new Promise((_, reject) => { connTimeout = setTimeout(() => reject(new Error('Koneksi video terlalu lama. Periksa jaringan lalu pilih Sambungkan Lagi.')), 25000); })
+    ]);
+    clearTimeout(connTimeout);
+    try {
+      await room.localParticipant.setMicrophoneEnabled(true);
+      lkLocalPreview(await room.localParticipant.setCameraEnabled(true));
+    } catch (e) { throw new Error('Kamera/mikrofon gagal. Izinkan akses pada browser, lalu pilih Sambungkan Lagi.'); }
+    try { await room.startAudio(); } catch (e) {}
+    const b = $('#snd'); if (b) b.style.display = room.canPlaybackAudio ? 'none' : 'block';
+  } catch(e) {
+    clearTimeout(connTimeout);
+    if (ROOM === room) ROOM = null;
+    try { room.disconnect(); } catch (_) {}
+    throw e;
+  }
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(lkEnsureMedia, 400); });
 async function lkLeave() {
@@ -283,17 +320,28 @@ async function guestView(code) {
   ringStart();
 }
 async function guestJoin(code) {
+  if (SC_GUEST_BUSY) return;
+  SC_GUEST_BUSY=true;
+  const nameEl=$('#gn');
+  const btn=document.querySelector('button[onclick^="guestJoin"]');
+  if(btn){btn.disabled=true;btn.textContent='Menghubungkan...';}
   ringStop();
   try {
-    const j = await api('guestJoin', {code, name:$('#gn').value.trim() || 'Orang tua'});
+    const j = await api('guestJoin', {code, name: nameEl ? (nameEl.value.trim() || 'Orang tua') : 'Orang tua'});
     $('#app').innerHTML = `<div class="card center" style="max-width:520px"><h2>Bersama ${esc(j.santri)}</h2>${callBox('Menghubungkan...')}
     <button class="bad" style="width:100%" onclick="guestEnd()">Akhiri</button></div>`;
-    S.onDisc = () => guestDone('Panggilan berakhir. Terima kasih.');
     await lkConnect(j.url, j.token);
-  } catch (e) { if ($('#e')) $('#e').textContent = e.message; else guestDone(e.message); }
+    S.onDisc = () => guestDone('Panggilan berakhir. Terima kasih.');
+  } catch (e) {
+    S.onDisc=null;
+    await lkLeave();
+    $('#app').innerHTML = `<div class="card center"><h2>Belum terhubung</h2><p class="err">${esc(e.message)}</p>
+      <button style="width:100%;margin:8px 0" onclick="guestView('${esc(code)}')">Coba Terima Lagi</button>
+      <button class="sec" style="width:100%" onclick="guestDone('Panggilan dibatalkan')">Tutup</button></div>`;
+  } finally { SC_GUEST_BUSY=false; if(document.contains(btn)){btn.disabled=false;btn.textContent='Terima panggilan';} }
 }
 function guestEnd() { S.onDisc = null; lkLeave(); guestDone('Panggilan selesai. Terima kasih.'); }
-function guestDone(m) { S.onDisc = null; lkLeave(); $('#app').innerHTML = `<div class="card center"><h2>${esc(m)}</h2><p class="mut">Anda boleh menutup halaman ini.</p></div>`; }
+function guestDone(m) { S.onDisc = null; ringStop(); lkLeave(); $('#app').innerHTML = `<div class="card center"><h2>${esc(m)}</h2><p class="mut">Anda boleh menutup halaman ini.</p></div>`; }
 
 /* ================= SANTRI ================= */
 function santriHome() {
@@ -307,17 +355,32 @@ function santriHome() {
   <p class="mut">Aplikasi membuat ruang, lalu Anda mengirim link ke WhatsApp orang tua. Timer mulai otomatis saat orang tua masuk.</p></div>`;
   startBeat();
 }
+function scLinkFailure(msg) {
+  S.onDisc = null;
+  ringStop();
+  $('#app').innerHTML = `<div class="card center"><h2>Koneksi panggilan terganggu</h2>
+    <div class="err">${esc(msg)}</div><p class="mut">Ruang panggilan masih dicatat oleh server. Jangan menekan Mulai baru sebelum sesi lama ditutup.</p>
+    <button style="width:100%;margin:9px 0" onclick="reconnect()">Sambungkan Lagi</button>
+    <button class="bad" style="width:100%" onclick="selesai('dibatalkan karena koneksi gagal')">Batalkan sesi &amp; coba dari awal</button></div>`;
+}
 async function siapkan() {
+  if (SC_PREPARE_BUSY || SC_END_BUSY) return;
+  const input = $('#no'); if (!input) return;
+  const no = input.value.trim();
+  SC_PREPARE_BUSY = true;
+  const btn = document.querySelector('button[onclick="siapkan()"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Membuat ruang...'; }
+  const eEl = $('#e'); if (eEl) eEl.textContent = 'Menghubungi server...';
   try {
-    const no = $('#no').value;
     const j = await api('prepare', {nomor:no});
     S.nomor = no; S.code = j.code; S.st = 'ready'; S.readyMin = j.readyMin;
     $('#app').innerHTML = `<div class="card center" style="max-width:520px">${callBox('Menunggu orang tua masuk...')}<div id="info"></div></div>`;
     showReady();
     ringStart();
-    S.onDisc = reconnect;
-    await lkConnect(j.url, j.token);
-    // Tidak mengganggu koneksi LiveKit apabila Firebase belum siap.
+    // Jangan memasang auto-reconnect sebelum koneksi pertama sukses.
+    try { await lkConnect(j.url, j.token); S.onDisc = reconnect; }
+    catch (err) { scLinkFailure(err.message); return; }
+    // Pengiriman notif APK tetap terpisah: kegagalan FCM tidak membatalkan VC.
     api('sendInvite').then(x => {
       const el = $('#scPush');
       if (el) el.textContent = x.status === 'sent' ? 'Notifikasi SantriCall dikirim ke ' + x.sent + ' HP orang tua.'
@@ -325,11 +388,42 @@ async function siapkan() {
         : x.status === 'url_missing' ? 'Alamat publik Billing belum diatur pemilik. Gunakan WhatsApp.'
         : 'Notifikasi APK belum terkirim (' + x.status + '). Gunakan WhatsApp.';
     }).catch(e => { const el=$('#scPush'); if (el) el.textContent='Notifikasi APK gagal: '+e.message+'. WhatsApp tetap tersedia.'; });
-  } catch (e) { if ($('#e')) $('#e').textContent = e.message; else alert(e.message); }
+  } catch (e) {
+    if (document.contains(eEl)) eEl.textContent = e.message;
+    // Jika request prepare timeout sesudah server membuat ruang, beri jalan keluar aman.
+    const a = $('#app');
+    if (a && /terlalu lama|tidak bisa menghubungi/i.test(e.message)) {
+      const m = document.createElement('p'); m.className='mut';
+      m.innerHTML = `Jika layar tetap terkunci setelah gangguan jaringan: <button class="sec sm" onclick="selesai('batalkan sesi server setelah timeout')">Tutup sesi server</button>`;
+      a.appendChild(m);
+    }
+  } finally {
+    SC_PREPARE_BUSY = false;
+    if (document.contains(btn)) { btn.disabled = false; btn.textContent = 'Mulai video call'; }
+  }
 }
 async function reconnect() {
-  if (!S.token || (S.st !== 'ready' && S.st !== 'on')) return;
-  try { const j = await api('rejoin'); await lkConnect(j.url, j.token); } catch (e) { toLogin('Koneksi video terputus. Login lagi.'); }
+  if (!S.token || (S.st !== 'ready' && S.st !== 'on') || SC_REJOIN_BUSY || SC_END_BUSY) return;
+  SC_REJOIN_BUSY = true;
+  S.onDisc = null;
+  const btn = document.querySelector('button[onclick="reconnect()"]');
+  if (btn) { btn.disabled=true; btn.textContent='Menyambungkan...'; }
+  try {
+    const j = await api('rejoin');
+    const isOn = S.st === 'on', prevEndAt = S.endAt;
+    // Siapkan wadah video dahulu sebelum LiveKit memasang track.
+    $('#app').innerHTML = `<div class="card center" style="max-width:520px">${callBox(isOn ? 'Memulihkan panggilan...' : 'Menunggu orang tua masuk...')}<div id="info"></div></div>`;
+    if (!isOn) showReady();
+    else {
+      S.endAt = prevEndAt;
+      $('#info').innerHTML = `<div id="wb"></div><div class="mut" style="text-align:center">Sisa Durasi Video Call</div><div class="big" id="cd">--:--</div>
+        <button class="bad" style="width:100%" onclick="selesai('selesai oleh santri')">Akhiri panggilan</button>`;
+    }
+    await lkConnect(j.url, j.token);
+    S.onDisc = reconnect;
+    if (isOn) goOn(Math.max(0, Math.ceil((prevEndAt-Date.now())/1000)));
+  } catch (e) { scLinkFailure(e.message); }
+  finally { SC_REJOIN_BUSY = false; if(document.contains(btn)){btn.disabled=false;btn.textContent='Sambungkan Lagi';} }
 }
 function showReady() {
   const link = location.origin + location.pathname + '?r=' + S.code;
@@ -371,17 +465,37 @@ function warn(left) {
 function startBeat() {
   clearInterval(T.beat);
   T.beat = setInterval(async () => {
+    if (SC_BEAT_BUSY || !S.token || S.role !== 'santri') return;
+    SC_BEAT_BUSY = true;
+    const tokenBefore = S.token;
     try {
       const j = await api('beat');
+      if (S.token !== tokenBefore) return; // jawaban lama tidak boleh menimpa sesi baru
       if (j.end) return toLogin(j.reason);
-      if (j.status === 'on') { if (S.st !== 'on') goOn(j.remaining); else S.endAt = Date.now() + j.remaining*1000; }
-    } catch (e) {}
+      if (j.status === 'on') {
+        if (!$('#info')) { S.st='on'; S.endAt=Date.now()+j.remaining*1000; }
+        else if (S.st !== 'on') goOn(j.remaining);
+        else S.endAt = Date.now() + j.remaining*1000;
+      }
+    } catch (e) { /* heartbeat berikutnya akan mencoba lagi, tanpa menimpa UI */ }
+    finally { SC_BEAT_BUSY = false; }
   }, 8000);
 }
 async function selesai(why) {
+  if (SC_END_BUSY) return;
+  SC_END_BUSY = true;
   S.onDisc = null;
-  try { await api('end', {reason:why}); } catch (e) {}
-  S.token = null; toLogin(why === 'waktu habis' ? 'Saldo durasi habis. Silakan top up sebelum menelepon kembali.' : 'Sesi selesai.');
+  stopTimers();
+  $('#app').innerHTML = `<div class="card center"><h2>Mengakhiri panggilan...</h2><p class="mut">Menunggu konfirmasi server agar slot benar-benar kosong.</p></div>`;
+  try {
+    await api('end', {reason: why});
+    S.token = null;
+    toLogin(why === 'waktu habis' ? 'Saldo durasi habis. Silakan top up sebelum menelepon kembali.' : 'Sesi selesai. Anda boleh login lagi.');
+  } catch(e) {
+    $('#app').innerHTML = `<div class="card center"><h2>Konfirmasi penutupan tertunda</h2>
+      <p class="err">${esc(e.message)}</p><p class="mut">Jangan mulai panggilan baru dahulu. Coba tutup sesi lagi; jika tetap gagal, minta pengawas memeriksa slot pada menu Perangkat.</p>
+      <button class="bad" style="width:100%" onclick="selesai('coba tutup sesi kembali')">Coba Tutup Sesi Lagi</button></div>`;
+  } finally { SC_END_BUSY = false; }
 }
 /* saat timer berjalan, aplikasi disembunyikan = sesi mati */
 function kill(reason) {
